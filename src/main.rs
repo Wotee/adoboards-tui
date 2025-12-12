@@ -220,10 +220,10 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         )
         .highlight_style(
             Style::default()
-                .bg(Color::LightBlue)
+                .bg(Color::DarkGray)
+                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol(">> ");
+        );
 
     f.render_stateful_widget(list, chunks[0], &mut app.list_state);
 }
