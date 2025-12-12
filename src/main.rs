@@ -15,7 +15,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use regex::Regex;
@@ -45,7 +45,6 @@ fn clean_ado_text(input: &str) -> String {
 }
 
 fn authenticate_with_cli_credential() -> Result<Credential> {
-    println!("Authenticate using Azure CLI credential");
     let azure_cli_credential = AzureCliCredential::new(None)?;
     Ok(Credential::from_token_credential(azure_cli_credential))
 }
@@ -208,7 +207,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         .items
         .iter()
         .map(|item| {
-            let content = Line::from(format!("{} | {}", item.id, item.title));
+            let content = Line::from(format!("{}: {}", item.id, item.title));
             ListItem::new(content).style(Style::default().fg(Color::White))
         })
         .collect();
@@ -242,18 +241,13 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
             [
                 Constraint::Length(3), // Title
                 Constraint::Min(0),    // Description
-                Constraint::Length(1), // Separator
                 Constraint::Length(5), // Acceptance Criteria
             ]
             .as_ref(),
         )
         .split(f.area());
 
-    // 1. Title/Header Block
-    let title_text = format!(
-        "ID: {} | Type: {} | {}",
-        item.id, item.work_item_type, item.title
-    );
+    let title_text = format!("{}: {} {}", item.work_item_type, item.id, item.title);
     let title_block = Block::default()
         .title("Work Item Details (Press ESC or 'q' to go back)")
         .borders(Borders::ALL)
@@ -263,51 +257,21 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .block(title_block);
     f.render_widget(title_paragraph, chunks[0]);
 
-    // 2. Description Block
     let desc_block = Block::default().title("Description").borders(Borders::ALL);
     let desc_paragraph = Paragraph::new(item.description.clone())
         .wrap(Wrap { trim: false })
         .block(desc_block);
     f.render_widget(desc_paragraph, chunks[1]);
 
-    // 3. Separator (Optional, for visual cleanup)
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            "--- Acceptance Criteria ---",
-            Style::default().fg(Color::Yellow),
-        )])),
-        chunks[2],
-    );
-
-    // 4. Acceptance Criteria Block
     let ac_block = Block::default()
         .title("Acceptance Criteria")
         .borders(Borders::ALL);
     let ac_paragraph = Paragraph::new(item.acceptance_criteria.clone())
         .wrap(Wrap { trim: false })
         .block(ac_block);
-    f.render_widget(ac_paragraph, chunks[3]);
+    f.render_widget(ac_paragraph, chunks[2]);
 }
-
-pub async fn list_backlog_levels(
-    organization: &str,
-    project: &str,
-    team: &str,
-) -> Result<(), Box<dyn Error>> {
-    let credential = get_credential()?;
-    let work_client = WorkClientBuilder::new(credential).build();
-    println!("Fetching available backlog levels for team: {}...", team);
-
-    let levels = work_client
-        .backlogs_client()
-        .list(organization, project, team)
-        .await?;
-
-    let level_names: Vec<String> = levels.value.into_iter().filter_map(|l| l.id).collect();
-    println!("{:#?}", level_names);
-    Ok(())
-    // Ok(level_names);
-}
+//
 // --- Main Loop and Setup ---
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
