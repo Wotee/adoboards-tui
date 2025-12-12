@@ -15,7 +15,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 use regex::Regex;
@@ -133,6 +133,12 @@ enum AppView {
     Detail,
 }
 
+enum LoadingState {
+    Loading,
+    Loaded,
+    Error(String),
+}
+
 /// The main application state struct.
 struct App {
     /// The current view (List or Detail).
@@ -141,25 +147,30 @@ struct App {
     items: Vec<WorkItem>,
     /// State management for the List widget (which item is selected).
     list_state: ListState,
+    /// Tracks the current data fetching state.
+    loading_state: LoadingState,
+    board_title: String,
 }
 
 impl App {
-    pub async fn init_with_data(
-        organization: &str,
-        project: &str,
-        team: &str,
-    ) -> Result<App, Box<dyn std::error::Error>> {
-        let items = get_backlog(organization, project, team).await?;
+    fn new(board_title: String) -> App {
+        App {
+            view: AppView::List,
+            items: Vec::new(),
+            list_state: ListState::default(),
+            loading_state: LoadingState::Loading,
+            board_title: board_title,
+        }
+    }
+
+    fn load_data(&mut self, items: Vec<WorkItem>) {
         let mut list_state = ListState::default();
         if !items.is_empty() {
-            list_state.select(Some(0))
+            list_state.select(Some(0));
         }
-
-        Ok(App {
-            view: AppView::List,
-            items,
-            list_state,
-        })
+        self.items = items;
+        self.list_state = list_state;
+        self.loading_state = LoadingState::Loaded;
     }
 
     /// Moves the selection up in the list.
@@ -216,7 +227,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("🚀 Azure DevOps Board"), // TODO: Title based on team
+                .title(app.board_title.clone()),
         )
         .highlight_style(
             Style::default()
@@ -271,13 +282,49 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .block(ac_block);
     f.render_widget(ac_paragraph, chunks[2]);
 }
-//
+
+fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
+    let area = f.area();
+    let block = Block::default().borders(Borders::ALL).title("Status");
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            message,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("Press 'q' to quit."),
+    ];
+
+    let paragraph = Paragraph::new(text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(Wrap { trim: false })
+        .block(block);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage(40),
+                Constraint::Length(5),
+                Constraint::Percentage(40),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+
+    f.render_widget(paragraph, chunks[1]);
+}
+
 // --- Main Loop and Setup ---
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let org = "waypoint-azure";
     let project = "HealthHub";
     let team = "HealthHub Team";
+    let board_title = format!("{} Backlog", team);
 
     // 1. Terminal setup
     enable_raw_mode()?;
@@ -286,13 +333,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::init_with_data(&org, &project, &team)
-        .await
-        .map_err(|e| {
-            eprintln!("Fatal initialization error");
-            eprintln!("Failed to fetch initial data. Error: {:?}", e);
-            e
-        })?;
+    let mut app = App::new(board_title);
+    let _ = terminal.draw(|f| draw_status_screen(f, "Connecting to Azure DevOps..."));
+    let fetch_result = get_backlog(&org, &project, &team).await;
+
+    match fetch_result {
+        Ok(items) => {
+            app.load_data(items);
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to fetch data: {:?}", e);
+            eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);
+            app.loading_state = LoadingState::Error(error_msg);
+        }
+    }
+
+    // 5. Run the TUI loop
     let res = run_app(&mut terminal, &mut app);
 
     // 3. Terminal cleanup
@@ -318,29 +374,41 @@ fn run_app<B: ratatui::backend::Backend>(
 ) -> io::Result<()> {
     loop {
         // Draw the UI based on the current view
-        terminal.draw(|f| match app.view {
-            AppView::List => draw_list_view(f, app),
-            AppView::Detail => draw_detail_view(f, app),
+        terminal.draw(|f| match app.loading_state {
+            LoadingState::Loaded => match app.view {
+                AppView::List => draw_list_view(f, app),
+                AppView::Detail => draw_detail_view(f, app),
+            },
+            LoadingState::Loading => draw_status_screen(f, "Loading work items..."),
+            LoadingState::Error(ref msg) => {
+                draw_status_screen(f, &format!("Failed to load data. {}", msg))
+            }
         })?;
 
         // Handle Events (User Input)
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
-                match app.view {
-                    AppView::List => match key.code {
+                match app.loading_state {
+                    LoadingState::Loading | LoadingState::Error(_) => match key.code {
                         KeyCode::Char('q') => return Ok(()),
-                        KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                        KeyCode::Down | KeyCode::Char('j') => app.next(),
-                        KeyCode::Enter => {
-                            if app.list_state.selected().is_some() {
-                                app.view = AppView::Detail;
-                            }
-                        }
                         _ => {}
                     },
-                    AppView::Detail => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
-                        _ => {}
+                    _ => match app.view {
+                        AppView::List => match key.code {
+                            KeyCode::Char('q') => return Ok(()),
+                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                            KeyCode::Down | KeyCode::Char('j') => app.next(),
+                            KeyCode::Enter => {
+                                if app.list_state.selected().is_some() {
+                                    app.view = AppView::Detail;
+                                }
+                            }
+                            _ => {}
+                        },
+                        AppView::Detail => match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
+                            _ => {}
+                        },
                     },
                 }
             }
