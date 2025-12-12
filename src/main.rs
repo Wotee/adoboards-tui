@@ -13,7 +13,7 @@ use lazy_static::lazy_static;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
@@ -141,15 +141,13 @@ enum LoadingState {
 
 /// The main application state struct.
 struct App {
-    /// The current view (List or Detail).
     view: AppView,
-    /// The list of work items fetched from Azure DevOps.
     items: Vec<WorkItem>,
-    /// State management for the List widget (which item is selected).
     list_state: ListState,
-    /// Tracks the current data fetching state.
     loading_state: LoadingState,
     board_title: String,
+    filter_query: String,
+    is_filtering: bool,
 }
 
 impl App {
@@ -160,7 +158,26 @@ impl App {
             list_state: ListState::default(),
             loading_state: LoadingState::Loading,
             board_title: board_title,
+            filter_query: String::new(),
+            is_filtering: false,
         }
+    }
+
+    fn get_filtered_items(&self) -> Vec<&WorkItem> {
+        if self.filter_query.is_empty() {
+            return self.items.iter().collect();
+        }
+
+        let query = self.filter_query.to_lowercase();
+
+        self.items
+            .iter()
+            .filter(|item| {
+                let id_match = item.id.to_string().contains(&query);
+                let title_match = item.title.to_lowercase().contains(&query);
+                id_match || title_match
+            })
+            .collect()
     }
 
     fn load_data(&mut self, items: Vec<WorkItem>) {
@@ -175,24 +192,35 @@ impl App {
 
     /// Moves the selection up in the list.
     fn previous(&mut self) {
+        let items_len = self.get_filtered_items().len();
+        if items_len == 0 {
+            self.list_state.select(None);
+            return;
+        }
+
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.items.len() - 1
+                    items_len - 1
                 } else {
                     i - 1
                 }
             }
-            None => 0,
+            None => items_len - 1,
         };
         self.list_state.select(Some(i));
     }
 
     /// Moves the selection down in the list.
     fn next(&mut self) {
+        let items_len = self.get_filtered_items().len();
+        if items_len == 0 {
+            self.list_state.select(None);
+            return;
+        }
         let i = match self.list_state.selected() {
             Some(i) => {
-                if i >= self.items.len() - 1 {
+                if i >= items_len - 1 {
                     0
                 } else {
                     i + 1
@@ -208,14 +236,43 @@ impl App {
 
 /// Renders the main List View (the board).
 fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
+    let constraints = if app.is_filtering {
+        [Constraint::Min(0), Constraint::Length(3)]
+    } else {
+        [Constraint::Min(0), Constraint::Length(0)]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
-        .constraints([Constraint::Percentage(100)].as_ref())
+        .constraints(constraints.as_ref())
         .split(f.area());
 
-    let items: Vec<ListItem> = app
-        .items
+    let new_selection_index = {
+        // *** Start of limited scope (Immutable borrow of app is temporary here) ***
+        let items_to_display_count = app.get_filtered_items().len();
+        let current_selected = app.list_state.selected();
+
+        if current_selected.is_some()
+            && current_selected.unwrap() >= items_to_display_count
+            && items_to_display_count > 0
+        {
+            Some(items_to_display_count - 1)
+        } else if items_to_display_count == 0 {
+            None
+        } else if current_selected.is_none() && items_to_display_count > 0 {
+            Some(0)
+        } else {
+            current_selected
+        }
+    };
+
+    if new_selection_index != app.list_state.selected() {
+        app.list_state.select(new_selection_index);
+    }
+    let items_to_display = app.get_filtered_items();
+
+    let list_items: Vec<ListItem> = items_to_display
         .iter()
         .map(|item| {
             let content = Line::from(format!("{}: {}", item.id, item.title));
@@ -223,7 +280,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         })
         .collect();
 
-    let list = List::new(items)
+    let list = List::new(list_items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -237,13 +294,31 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         );
 
     f.render_stateful_widget(list, chunks[0], &mut app.list_state);
+
+    if app.is_filtering {
+        let filter_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title("Filter Mode");
+
+        let filter_text = Line::from(format!("/{}", app.filter_query));
+        let filter_paragraph = Paragraph::new(filter_text).block(filter_block);
+        f.render_widget(filter_paragraph, chunks[1]);
+
+        // Set the cursor position for input
+        let x = chunks[1].x + 2 + app.filter_query.len() as u16;
+        let y = chunks[1].y + 1;
+        f.set_cursor_position(Position::new(x, y));
+    }
 }
 
 /// Renders the Detail View for the selected work item.
 fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
-    // Get the selected work item
-    let selected_item_index = app.list_state.selected().unwrap_or(0);
-    let item = &app.items[selected_item_index];
+    let filtered_items = app.get_filtered_items();
+    let selected_index = app.list_state.selected().unwrap_or(0);
+    let item = filtered_items.get(selected_index).expect(
+        "Logic Error: Detail view opened but item selection is invalid for the filtered list.",
+    );
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -390,26 +465,68 @@ fn run_app<B: ratatui::backend::Backend>(
             if let Event::Key(key) = event::read()? {
                 match app.loading_state {
                     LoadingState::Loading | LoadingState::Error(_) => match key.code {
-                        KeyCode::Char('q') => return Ok(()),
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                         _ => {}
                     },
-                    _ => match app.view {
-                        AppView::List => match key.code {
-                            KeyCode::Char('q') => return Ok(()),
-                            KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                            KeyCode::Down | KeyCode::Char('j') => app.next(),
-                            KeyCode::Enter => {
-                                if app.list_state.selected().is_some() {
-                                    app.view = AppView::Detail;
+                    _ => {
+                        if app.is_filtering {
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Esc => {
+                                    app.is_filtering = false;
+                                    if key.code == KeyCode::Esc {
+                                        app.filter_query.clear();
+                                    }
+                                    app.list_state
+                                        .select(app.get_filtered_items().first().map(|_| 0));
                                 }
+                                KeyCode::Backspace => {
+                                    app.filter_query.pop();
+                                    app.list_state
+                                        .select(app.get_filtered_items().first().map(|_| 0));
+                                }
+                                KeyCode::Char(c) => {
+                                    if c != '/' {
+                                        app.filter_query.push(c);
+                                        app.list_state
+                                            .select(app.get_filtered_items().first().map(|_| 0));
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
-                        },
-                        AppView::Detail => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
-                            _ => {}
-                        },
-                    },
+                        } else {
+                            match app.view {
+                                AppView::List => match key.code {
+                                    KeyCode::Char('q') => return Ok(()),
+                                    KeyCode::Char('/') => {
+                                        app.is_filtering = true;
+                                        app.filter_query.clear();
+                                        app.list_state
+                                            .select(app.get_filtered_items().first().map(|_| 0));
+                                    }
+                                    KeyCode::Up | KeyCode::Char('k') => app.previous(),
+                                    KeyCode::Down | KeyCode::Char('j') => app.next(),
+                                    KeyCode::Enter => {
+                                        if app.list_state.selected().is_some() {
+                                            app.view = AppView::Detail;
+                                        }
+                                    }
+                                    KeyCode::Esc => {
+                                        if !app.filter_query.is_empty() {
+                                            app.filter_query.clear();
+                                            app.list_state.select(
+                                                app.get_filtered_items().first().map(|_| 0),
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                },
+                                AppView::Detail => match key.code {
+                                    KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
+                                    _ => {}
+                                },
+                            }
+                        }
+                    }
                 }
             }
         }
