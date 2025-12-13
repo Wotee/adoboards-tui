@@ -3,7 +3,6 @@
 TUI to check the ADO without leaving the CLI
 
 ## Backlog:
-- []: Bug: Fix crash on hover on bottom of the screen
 - []: Configurable "backlog level"
 - []: Configurable hotkeys
 - []: Open work item in browser
