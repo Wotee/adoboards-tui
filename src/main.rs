@@ -121,7 +121,7 @@ pub async fn get_backlog(
             .and_then(|assigned_to_value| assigned_to_value.get("displayName"))
             .and_then(|display_name_value| display_name_value.as_str())
             .map(|s| s.to_string())
-            .unwrap_or("N/A".to_string());
+            .unwrap_or("Unassigned".to_string());
 
         app_items.push(WorkItem {
             id: item.id as u32,
