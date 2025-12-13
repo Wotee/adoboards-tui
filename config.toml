@@ -8,6 +8,6 @@ team = "HealthHub Team"
 
 [[boards]]
 organization = "if-it"
-project = "Orchestrator"
-team = "Orchestrator Team"
+project = "Claims-Orchestrator"
+team = "Claims-Orchestrator Team"
 
