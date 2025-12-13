@@ -208,6 +208,19 @@ impl App {
         &self.all_boards[self.current_board_index]
     }
 
+    fn open_item(&mut self) {
+        let board = self.all_boards.get(self.current_board_index).unwrap();
+        let item = self.get_selected_item().unwrap();
+        let url = format!(
+            "https://dev.azure.com/{}/{}/_workitems/edit/{}",
+            board.organization, board.project, item.id,
+        );
+
+        if let Err(e) = open::that(url) {
+            eprintln!("Failed to open link: {}", e);
+        }
+    }
+
     fn next_board(&mut self) {
         if self.all_boards.len() > 1 {
             self.current_board_index = (self.current_board_index + 1) % self.all_boards.len();
@@ -692,6 +705,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                 },
                                 AppView::Detail => match key.code {
                                     KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
+                                    KeyCode::Char('o') => app.open_item(),
                                     _ => {}
                                 },
                             }
