@@ -1,0 +1,13 @@
+[default]
+common = "lol"
+
+[[boards]]
+organization = "waypoint-azure"
+project = "HealthHub"
+team = "HealthHub Team"
+
+[[boards]]
+organization = "if-it"
+project = "Orchestrator"
+team = "Orchestrator Team"
+

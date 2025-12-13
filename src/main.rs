@@ -19,9 +19,30 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::{error::Error, io, time::Duration};
 
 // --- Data Model Structs ---
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BoardConfig {
+    organization: String,
+    project: String,
+    team: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct CommonConfig {
+    common: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AppConfig {
+    #[serde(default)]
+    common: Option<CommonConfig>,
+    #[serde(default)]
+    boards: Vec<BoardConfig>,
+}
 
 /// Represents a simple work item returned by the API.
 #[derive(Clone, Debug)]
@@ -157,23 +178,51 @@ struct App {
     items: Vec<WorkItem>,
     list_state: ListState,
     loading_state: LoadingState,
-    board_title: String,
     filter_query: String,
     is_filtering: bool,
     is_list_details_hover_visible: bool,
+    all_boards: Vec<BoardConfig>,
+    current_board_index: usize,
 }
 
 impl App {
-    fn new(board_title: String) -> App {
+    fn new(boards: Vec<BoardConfig>) -> App {
+        let mut list_state = ListState::default();
+        if !boards.is_empty() {
+            list_state.select(Some(0));
+        }
         App {
             view: AppView::List,
             items: Vec::new(),
             list_state: ListState::default(),
             loading_state: LoadingState::Loading,
-            board_title: board_title,
             filter_query: String::new(),
             is_filtering: false,
             is_list_details_hover_visible: false,
+            all_boards: boards,
+            current_board_index: 0,
+        }
+    }
+
+    fn current_board(&self) -> &BoardConfig {
+        &self.all_boards[self.current_board_index]
+    }
+
+    fn next_board(&mut self) {
+        if self.all_boards.len() > 1 {
+            self.current_board_index = (self.current_board_index + 1) % self.all_boards.len();
+            self.loading_state = LoadingState::Loading;
+        }
+    }
+
+    fn previous_board(&mut self) {
+        if self.all_boards.len() > 1 {
+            if self.current_board_index == 0 {
+                self.current_board_index = self.all_boards.len() - 1;
+            } else {
+                self.current_board_index -= 1;
+            }
+            self.loading_state = LoadingState::Loading;
         }
     }
 
@@ -249,6 +298,17 @@ impl App {
         };
         self.list_state.select(Some(i));
     }
+}
+
+fn load_config() -> Result<Vec<BoardConfig>> {
+    let config_content = std::fs::read_to_string("config.toml")?;
+    let app_config: AppConfig = toml::from_str(&config_content)?;
+    if app_config.boards.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Configuration file 'config.toml' is missing any board definitions."
+        ));
+    }
+    Ok(app_config.boards)
 }
 
 // --- TUI Drawing Functions ---
@@ -345,12 +405,10 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         })
         .collect();
 
+    let board_title = format!("{} Backlog", app.current_board().team);
+
     let list = List::new(list_items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(app.board_title.clone()),
-        )
+        .block(Block::default().borders(Borders::ALL).title(board_title))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -464,37 +522,53 @@ fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
 // --- Main Loop and Setup ---
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let org = "waypoint-azure";
-    let project = "HealthHub";
-    let team = "HealthHub Team";
-    let board_title = format!("{} Backlog", team);
-
-    // 1. Terminal setup
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(board_title);
-    let _ = terminal.draw(|f| draw_status_screen(f, "Connecting to Azure DevOps..."));
-    let fetch_result = get_backlog(&org, &project, &team).await;
-
-    match fetch_result {
-        Ok(items) => {
-            app.load_data(items);
-        }
+    let all_boards = match load_config() {
+        Ok(boards) => boards,
         Err(e) => {
-            let error_msg = format!("Failed to fetch data: {:?}", e);
-            eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);
-            app.loading_state = LoadingState::Error(error_msg);
+            eprintln!("Configuration Error: {}", e);
+            return Err(e.into());
         }
+    };
+
+    let mut app = App::new(all_boards);
+    let mut res = Ok(());
+
+    while !matches!(app.loading_state, LoadingState::Error(_)) {
+        if matches!(app.loading_state, LoadingState::Loading) {
+            let board = app.current_board();
+            let board_title = format!("{} Backlog", board.team);
+            terminal.draw(|f| draw_status_screen(f, &format!("Loading {}...", board_title)))?;
+
+            let fetch_result = get_backlog(&board.organization, &board.project, &board.team).await;
+            match fetch_result {
+                Ok(items) => {
+                    app.load_data(items);
+                }
+                Err(e) => {
+                    let error_msg = format!("Failed to fetch data: {:?}", e);
+                    eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);
+                    app.loading_state = LoadingState::Error(error_msg);
+                }
+            }
+            continue;
+        }
+        res = run_app(&mut terminal, &mut app);
+        if res.is_err() {
+            break;
+        }
+
+        if matches!(app.loading_state, LoadingState::Loading) {
+            continue;
+        }
+        break;
     }
 
-    // 5. Run the TUI loop
-    let res = run_app(&mut terminal, &mut app);
-
-    // 3. Terminal cleanup
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -515,6 +589,9 @@ fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> io::Result<()> {
+    if matches!(app.loading_state, LoadingState::Loading) {
+        return Ok(());
+    }
     loop {
         // Draw the UI based on the current view
         terminal.draw(|f| match app.loading_state {
@@ -522,7 +599,7 @@ fn run_app<B: ratatui::backend::Backend>(
                 AppView::List => draw_list_view(f, app),
                 AppView::Detail => draw_detail_view(f, app),
             },
-            LoadingState::Loading => draw_status_screen(f, "Loading work items..."),
+            LoadingState::Loading => { /* Should not happen */ }
             LoadingState::Error(ref msg) => {
                 draw_status_screen(f, &format!("Failed to load data. {}", msg))
             }
@@ -594,6 +671,16 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 app.get_filtered_items().first().map(|_| 0),
                                             );
                                         }
+                                    }
+                                    KeyCode::Char('n') => {
+                                        app.is_list_details_hover_visible = false;
+                                        app.next_board();
+                                        return Ok(());
+                                    }
+                                    KeyCode::Char('p') => {
+                                        app.is_list_details_hover_visible = false;
+                                        app.previous_board();
+                                        return Ok(());
                                     }
                                     KeyCode::Char('K') => {
                                         app.is_list_details_hover_visible = true;

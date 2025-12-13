@@ -10,7 +10,9 @@ tokio = { version = "1", features = ["full"] }
 azure_devops_rust_api = { version = "0.32", features = ["work", "wit"]}
 azure_identity = "0.28"
 anyhow = "1"
-
+serde = { version = "1.0", features = ["derive"]}
+serde_derive = "1.0"
+toml = "0.8"
 html-escape = "0.2.11"
 regex = "1"
 lazy_static = "1.4"
