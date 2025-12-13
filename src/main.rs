@@ -28,6 +28,8 @@ use std::{error::Error, io, time::Duration};
 pub struct WorkItem {
     id: u32,
     title: String,
+    assigned_to: String,
+    state: String,
     work_item_type: String,
     description: String,
     acceptance_criteria: String,
@@ -112,6 +114,14 @@ pub async fn get_backlog(
                 .and_then(|v| v.as_str())
                 .map_or("N/A".to_string(), clean_ado_text)
         };
+        let assigned_to_name: String = item
+            .fields
+            .get("System.AssignedTo")
+            .and_then(|assigned_to_value| assigned_to_value.as_object())
+            .and_then(|assigned_to_value| assigned_to_value.get("displayName"))
+            .and_then(|display_name_value| display_name_value.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or("N/A".to_string());
 
         app_items.push(WorkItem {
             id: item.id as u32,
@@ -119,6 +129,8 @@ pub async fn get_backlog(
             work_item_type: get_and_clean_field("System.WorkItemType"),
             description: get_and_clean_field("System.Description"),
             acceptance_criteria: get_and_clean_field("Microsoft.VSTS.Common.AcceptanceCriteria"),
+            assigned_to: assigned_to_name,
+            state: get_and_clean_field("System.State"),
         });
     }
 
