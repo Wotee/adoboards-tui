@@ -117,9 +117,9 @@ pub async fn get_backlog(
         let assigned_to_name: String = item
             .fields
             .get("System.AssignedTo")
-            .and_then(|assigned_to_value| assigned_to_value.as_object())
-            .and_then(|assigned_to_value| assigned_to_value.get("displayName"))
-            .and_then(|display_name_value| display_name_value.as_str())
+            .and_then(|assigned_to| assigned_to.as_object())
+            .and_then(|assigned_to| assigned_to.get("displayName"))
+            .and_then(|display_name| display_name.as_str())
             .map(|s| s.to_string())
             .unwrap_or("Unassigned".to_string());
 
