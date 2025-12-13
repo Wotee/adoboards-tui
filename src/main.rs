@@ -312,50 +312,53 @@ fn load_config() -> Result<Vec<BoardConfig>> {
 }
 
 // --- TUI Drawing Functions ---
-fn calculate_popup_rect(frame_area: Rect, selected_index: usize, list_area: Rect) -> Rect {
-    let content_start_y = list_area.y + 1;
-    let selected_y = content_start_y + selected_index as u16;
+fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<Rect> {
+    let selected_index_in_filtered_list = app.list_state.selected()?;
+    let content_height = list_area.height.saturating_sub(2); // subtract top/bottom border
+    let selected_y_in_list =
+        list_area.y + 1 + (selected_index_in_filtered_list % content_height as usize) as u16;
 
-    let popup_height = 4;
+    let popup_height = 5; // Title, 2 content lines, 2 borders
     let popup_width = 45;
 
     let mut x = list_area.x + 20;
-    let mut y = selected_y + 1;
+    let mut y = selected_y_in_list + 1; // Default: 1 line below the selected item
 
-    // Ensure it doesn't go off the right edge
+    if y + popup_height > frame_area.height {
+        y = selected_y_in_list.saturating_sub(popup_height);
+    }
+
+    y = y.max(frame_area.y);
+
     if x + popup_width > frame_area.width {
         x = frame_area.width.saturating_sub(popup_width + 1);
     }
-    // Ensure it doesn't go off the top edge
-    if y + popup_height > frame_area.height {
-        y = selected_y.saturating_sub(popup_height + 1);
-    }
-    Rect {
+    x = x.max(frame_area.x + 1);
+
+    Some(Rect {
         x,
         y,
         width: popup_width,
         height: popup_height,
-    }
+    })
 }
 
 fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     if app.is_list_details_hover_visible {
         if let Some(item) = app.get_selected_item() {
-            let selected_index = app.list_state.selected().unwrap_or(0);
-            let popup_rect = calculate_popup_rect(f.area(), selected_index, list_area);
+            if let Some(popup_rect) = calculate_popup_rect(f.area(), app, list_area) {
+                f.render_widget(Clear, popup_rect);
+                let content_text = vec![
+                    Line::from(format!("Assigned To: {}", item.assigned_to)),
+                    Line::from(format!("State: {}", item.state)),
+                ];
 
-            f.render_widget(Clear, popup_rect);
-
-            let content_text = vec![
-                Line::from(format!("Assigned To: {}", item.assigned_to)),
-                Line::from(format!("State: {}", item.state)),
-            ];
-
-            let popup_block = Block::default()
-                .borders(Borders::ALL)
-                .title("Details")
-                .border_style(Style::default().fg(Color::LightBlue));
-            f.render_widget(Paragraph::new(content_text).block(popup_block), popup_rect);
+                let popup_block = Block::default()
+                    .borders(Borders::ALL)
+                    .title("Details")
+                    .border_style(Style::default().fg(Color::LightBlue));
+                f.render_widget(Paragraph::new(content_text).block(popup_block), popup_rect);
+            }
         }
     }
 }
