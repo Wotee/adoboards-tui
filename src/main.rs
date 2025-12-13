@@ -13,10 +13,10 @@ use lazy_static::lazy_static;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Position},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use regex::Regex;
 use std::{error::Error, io, time::Duration};
@@ -160,6 +160,7 @@ struct App {
     board_title: String,
     filter_query: String,
     is_filtering: bool,
+    is_list_details_hover_visible: bool,
 }
 
 impl App {
@@ -172,7 +173,13 @@ impl App {
             board_title: board_title,
             filter_query: String::new(),
             is_filtering: false,
+            is_list_details_hover_visible: false,
         }
+    }
+
+    fn get_selected_item(&self) -> Option<&WorkItem> {
+        let selected_index = self.list_state.selected()?;
+        self.get_filtered_items().get(selected_index).copied()
     }
 
     fn get_filtered_items(&self) -> Vec<&WorkItem> {
@@ -245,6 +252,53 @@ impl App {
 }
 
 // --- TUI Drawing Functions ---
+fn calculate_popup_rect(frame_area: Rect, selected_index: usize, list_area: Rect) -> Rect {
+    let content_start_y = list_area.y + 1;
+    let selected_y = content_start_y + selected_index as u16;
+
+    let popup_height = 4;
+    let popup_width = 45;
+
+    let mut x = list_area.x + 20;
+    let mut y = selected_y + 1;
+
+    // Ensure it doesn't go off the right edge
+    if x + popup_width > frame_area.width {
+        x = frame_area.width.saturating_sub(popup_width + 1);
+    }
+    // Ensure it doesn't go off the top edge
+    if y + popup_height > frame_area.height {
+        y = selected_y.saturating_sub(popup_height + 1);
+    }
+    Rect {
+        x,
+        y,
+        width: popup_width,
+        height: popup_height,
+    }
+}
+
+fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
+    if app.is_list_details_hover_visible {
+        if let Some(item) = app.get_selected_item() {
+            let selected_index = app.list_state.selected().unwrap_or(0);
+            let popup_rect = calculate_popup_rect(f.area(), selected_index, list_area);
+
+            f.render_widget(Clear, popup_rect);
+
+            let content_text = vec![
+                Line::from(format!("Assigned To: {}", item.assigned_to)),
+                Line::from(format!("State: {}", item.state)),
+            ];
+
+            let popup_block = Block::default()
+                .borders(Borders::ALL)
+                .title("Details")
+                .border_style(Style::default().fg(Color::LightBlue));
+            f.render_widget(Paragraph::new(content_text).block(popup_block), popup_rect);
+        }
+    }
+}
 
 /// Renders the main List View (the board).
 fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
@@ -261,7 +315,6 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         .split(f.area());
 
     let new_selection_index = {
-        // *** Start of limited scope (Immutable borrow of app is temporary here) ***
         let items_to_display_count = app.get_filtered_items().len();
         let current_selected = app.list_state.selected();
 
@@ -305,7 +358,10 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
 
+    let list_area = chunks[0];
     f.render_stateful_widget(list, chunks[0], &mut app.list_state);
+
+    draw_hover_popup(f, app, list_area);
 
     if app.is_filtering {
         let filter_block = Block::default()
@@ -510,25 +566,37 @@ fn run_app<B: ratatui::backend::Backend>(
                                 AppView::List => match key.code {
                                     KeyCode::Char('q') => return Ok(()),
                                     KeyCode::Char('/') => {
+                                        app.is_list_details_hover_visible = false;
                                         app.is_filtering = true;
                                         app.filter_query.clear();
                                         app.list_state
                                             .select(app.get_filtered_items().first().map(|_| 0));
                                     }
-                                    KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                                    KeyCode::Down | KeyCode::Char('j') => app.next(),
+                                    KeyCode::Up | KeyCode::Char('k') => {
+                                        app.is_list_details_hover_visible = false;
+                                        app.previous();
+                                    }
+                                    KeyCode::Down | KeyCode::Char('j') => {
+                                        app.is_list_details_hover_visible = false;
+                                        app.next();
+                                    }
                                     KeyCode::Enter => {
+                                        app.is_list_details_hover_visible = false;
                                         if app.list_state.selected().is_some() {
                                             app.view = AppView::Detail;
                                         }
                                     }
                                     KeyCode::Esc => {
+                                        app.is_list_details_hover_visible = false;
                                         if !app.filter_query.is_empty() {
                                             app.filter_query.clear();
                                             app.list_state.select(
                                                 app.get_filtered_items().first().map(|_| 0),
                                             );
                                         }
+                                    }
+                                    KeyCode::Char('K') => {
+                                        app.is_list_details_hover_visible = true;
                                     }
                                     _ => {}
                                 },
