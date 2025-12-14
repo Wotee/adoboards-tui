@@ -729,6 +729,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                     KeyCode::Char('K') => {
                                         app.is_list_details_hover_visible = true;
                                     }
+                                    KeyCode::Char('o') => app.open_item(),
                                     _ => {}
                                 },
                                 AppView::Detail => match key.code {
