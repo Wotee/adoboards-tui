@@ -6,11 +6,16 @@ TUI to check the ADO without leaving the CLI
 - az cli
 
 ## Backlog:
+### Common
 - []: Configurable "backlog level"
 - []: Configurable hotkeys
-- []: Refine WI description/AC so line breaks etc. are not broken
-- []: Edit description / AC
-- []: See parent/child items
-- []: Go to parent/child items
+- []: View hotkeys (for current view)
+### List view
+- []: Reload backlog
+- []: Cache backlogs when using multiple?
 - []: See iteration backlogs
-- []: View hotkeys
+### Detail view
+- []: Refine WI description/AC so line breaks etc. are not broken
+- []: Edit fields
+- []: See parent/child items 
+- []: Go to parent/child items 
