@@ -344,7 +344,7 @@ fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<
 
     let relative_y = (selected_index.saturating_sub(offset)) as u16;
 
-    let popup_height = 5;
+    let popup_height = 4;
     let popup_width = 45;
 
     let selected_y_on_screen = list_area.y + 1 + relative_y;
