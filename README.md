@@ -6,7 +6,6 @@ TUI to check the ADO without leaving the CLI
 - az cli
 
 ## Backlog:
-- []: gg/G on list view
 - []: Configurable "backlog level"
 - []: Configurable hotkeys
 - []: Refine WI description/AC so line breaks etc. are not broken

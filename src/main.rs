@@ -183,6 +183,7 @@ struct App {
     is_list_details_hover_visible: bool,
     all_boards: Vec<BoardConfig>,
     current_board_index: usize,
+    is_waiting_for_g: bool,
 }
 
 impl App {
@@ -201,6 +202,20 @@ impl App {
             is_list_details_hover_visible: false,
             all_boards: boards,
             current_board_index: 0,
+            is_waiting_for_g: false,
+        }
+    }
+
+    fn jump_to_start(&mut self) {
+        if !self.get_filtered_items().is_empty() {
+            self.list_state.select(Some(0));
+        }
+    }
+
+    fn jump_to_end(&mut self) {
+        let items_len = self.get_filtered_items().len();
+        if items_len > 0 {
+            self.list_state.select(Some(items_len - 1));
         }
     }
 
@@ -271,7 +286,6 @@ impl App {
         self.loading_state = LoadingState::Loaded;
     }
 
-    /// Moves the selection up in the list.
     fn previous(&mut self) {
         let items_len = self.get_filtered_items().len();
         if items_len == 0 {
@@ -282,7 +296,7 @@ impl App {
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    items_len - 1
+                    0
                 } else {
                     i - 1
                 }
@@ -292,7 +306,6 @@ impl App {
         self.list_state.select(Some(i));
     }
 
-    /// Moves the selection down in the list.
     fn next(&mut self) {
         let items_len = self.get_filtered_items().len();
         if items_len == 0 {
@@ -302,7 +315,7 @@ impl App {
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i >= items_len - 1 {
-                    0
+                    items_len - 1
                 } else {
                     i + 1
                 }
@@ -659,6 +672,20 @@ fn run_app<B: ratatui::backend::Backend>(
                             match app.view {
                                 AppView::List => match key.code {
                                     KeyCode::Char('q') => return Ok(()),
+                                    KeyCode::Char('G') => {
+                                        app.is_list_details_hover_visible = false;
+                                        app.jump_to_end();
+                                        app.is_waiting_for_g = false;
+                                    }
+                                    KeyCode::Char('g') => {
+                                        if app.is_waiting_for_g {
+                                            app.is_list_details_hover_visible = false;
+                                            app.jump_to_start();
+                                            app.is_waiting_for_g = false;
+                                        } else {
+                                            app.is_waiting_for_g = true;
+                                        }
+                                    }
                                     KeyCode::Char('/') => {
                                         app.is_list_details_hover_visible = false;
                                         app.is_filtering = true;
