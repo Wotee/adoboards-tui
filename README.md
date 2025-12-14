@@ -8,7 +8,6 @@ TUI to check the ADO without leaving the CLI
 ## Backlog:
 ### Common
 - []: Configurable "backlog level"
-- []: Configurable hotkeys
 - []: View hotkeys (for current view)
 ### List view
 - []: Reload backlog

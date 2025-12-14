@@ -36,12 +36,92 @@ pub struct CommonConfig {
     me: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct KeysConfig {
+    #[serde(default = "default_key_quit")]
+    quit: String,
+    #[serde(default = "default_key_next")]
+    next: String,
+    #[serde(default = "default_key_previous")]
+    previous: String,
+    #[serde(default = "default_key_hover")]
+    hover: String,
+    #[serde(default = "default_key_open")]
+    open: String,
+    #[serde(default = "default_key_next_board")]
+    next_board: String,
+    #[serde(default = "default_key_previous_board")]
+    previous_board: String,
+    #[serde(default = "default_key_search")]
+    search: String,
+    #[serde(default = "default_key_assigned_to_me_filter")]
+    assigned_to_me_filter: String,
+    #[serde(default = "default_key_filter_jump_to_top")]
+    jump_to_top: String,
+    #[serde(default = "default_key_filter_jump_to_end")]
+    jump_to_end: String,
+}
+
+impl Default for KeysConfig {
+    fn default() -> Self {
+        KeysConfig {
+            quit: "q".into(),
+            next: "j".into(),
+            previous: "k".into(),
+            hover: "K".into(),
+            open: "o".into(),
+            next_board: ">".into(),
+            previous_board: "<".into(),
+            search: "/".into(),
+            assigned_to_me_filter: "m".into(),
+            jump_to_top: "gg".into(),
+            jump_to_end: "G".into(),
+        }
+    }
+}
+
+fn default_key_quit() -> String {
+    "q".into()
+}
+fn default_key_previous() -> String {
+    "k".into()
+}
+fn default_key_next() -> String {
+    "j".into()
+}
+fn default_key_open() -> String {
+    "o".into()
+}
+fn default_key_hover() -> String {
+    "o".into()
+}
+fn default_key_previous_board() -> String {
+    "<".into()
+}
+fn default_key_next_board() -> String {
+    ">".into()
+}
+fn default_key_search() -> String {
+    "/".into()
+}
+fn default_key_assigned_to_me_filter() -> String {
+    "m".into()
+}
+fn default_key_filter_jump_to_top() -> String {
+    "gg".into()
+}
+fn default_key_filter_jump_to_end() -> String {
+    "G".into()
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default)]
     common: CommonConfig,
     #[serde(default)]
     boards: Vec<BoardConfig>,
+    #[serde(default)]
+    keys: KeysConfig,
 }
 
 /// Represents a simple work item returned by the API.
@@ -172,7 +252,6 @@ enum LoadingState {
     Error(String),
 }
 
-/// The main application state struct.
 struct App {
     view: AppView,
     items: Vec<WorkItem>,
@@ -183,9 +262,11 @@ struct App {
     is_list_details_hover_visible: bool,
     all_boards: Vec<BoardConfig>,
     current_board_index: usize,
-    is_waiting_for_g: bool,
     me: String,
     assigned_to_me_filter_on: bool,
+    keys: KeysConfig,
+    // To support sequences like 'gg'
+    last_key_press: Option<KeyCode>,
 }
 
 impl App {
@@ -204,9 +285,10 @@ impl App {
             is_list_details_hover_visible: false,
             all_boards: config.boards,
             current_board_index: 0,
-            is_waiting_for_g: false,
             me: config.common.me,
             assigned_to_me_filter_on: false,
+            keys: config.keys,
+            last_key_press: None,
         }
     }
 
@@ -644,6 +726,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn key_matches_sequence(
+    current_key: char,
+    last_key: Option<KeyCode>,
+    target_sequence: &str,
+) -> bool {
+    if target_sequence.len() == 1 {
+        return target_sequence.chars().next() == Some(current_key);
+    }
+
+    if target_sequence.len() == 2 {
+        let first_char = target_sequence.chars().next().unwrap();
+        let second_char = target_sequence.chars().nth(1).unwrap();
+        return last_key == Some(KeyCode::Char(first_char)) && current_key == second_char;
+    }
+
+    // No longer combinations supported for now
+    false
+}
+
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -698,78 +799,128 @@ fn run_app<B: ratatui::backend::Backend>(
                                 _ => {}
                             }
                         } else {
+                            let current_char = match key.code {
+                                KeyCode::Char(c) => Some(c),
+                                _ => None,
+                            };
                             match app.view {
-                                AppView::List => match key.code {
-                                    KeyCode::Char('q') => return Ok(()),
-                                    KeyCode::Char('G') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.jump_to_end();
-                                        app.is_waiting_for_g = false;
-                                    }
-                                    KeyCode::Char('g') => {
-                                        if app.is_waiting_for_g {
+                                AppView::List => {
+                                    if let Some(c) = current_char {
+                                        let last_key = app.last_key_press;
+
+                                        if key_matches_sequence(c, last_key, &app.keys.jump_to_top)
+                                        {
                                             app.is_list_details_hover_visible = false;
                                             app.jump_to_start();
-                                            app.is_waiting_for_g = false;
-                                        } else {
-                                            app.is_waiting_for_g = true;
-                                        }
-                                    }
-                                    KeyCode::Char('/') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.is_filtering = true;
-                                        app.filter_query.clear();
-                                        app.list_state
-                                            .select(app.get_filtered_items().first().map(|_| 0));
-                                    }
-                                    KeyCode::Up | KeyCode::Char('k') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.previous();
-                                    }
-                                    KeyCode::Down | KeyCode::Char('j') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.next();
-                                    }
-                                    KeyCode::Enter => {
-                                        app.is_list_details_hover_visible = false;
-                                        if app.list_state.selected().is_some() {
-                                            app.view = AppView::Detail;
-                                        }
-                                    }
-                                    KeyCode::Esc => {
-                                        if app.assigned_to_me_filter_on {
-                                            app.toggle_assigned_to_me_filter()
-                                        }
-                                        app.is_list_details_hover_visible = false;
-                                        if !app.filter_query.is_empty() {
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.jump_to_end,
+                                        ) {
+                                            app.is_list_details_hover_visible = false;
+                                            app.jump_to_end();
+                                        } else if key_matches_sequence(c, last_key, &app.keys.quit)
+                                        {
+                                            return Ok(());
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.search,
+                                        ) {
+                                            app.is_list_details_hover_visible = false;
+                                            app.is_filtering = true;
                                             app.filter_query.clear();
                                             app.list_state.select(
                                                 app.get_filtered_items().first().map(|_| 0),
                                             );
+                                        } else if key_matches_sequence(c, last_key, &app.keys.next)
+                                        {
+                                            app.is_list_details_hover_visible = false;
+                                            app.next();
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.previous,
+                                        ) {
+                                            app.is_list_details_hover_visible = false;
+                                            app.previous();
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.next_board,
+                                        ) {
+                                            app.is_list_details_hover_visible = false;
+                                            app.next_board();
+                                            return Ok(());
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.previous_board,
+                                        ) {
+                                            app.is_list_details_hover_visible = false;
+                                            app.previous_board();
+                                            return Ok(());
+                                        } else if key_matches_sequence(c, last_key, &app.keys.hover)
+                                        {
+                                            app.is_list_details_hover_visible = true;
+                                        } else if key_matches_sequence(c, last_key, &app.keys.open)
+                                        {
+                                            app.open_item();
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.assigned_to_me_filter,
+                                        ) {
+                                            app.toggle_assigned_to_me_filter()
+                                        }
+                                        app.last_key_press = Some(key.code);
+                                    } else {
+                                        match key.code {
+                                            KeyCode::Enter => {
+                                                app.is_list_details_hover_visible = false;
+                                                if app.list_state.selected().is_some() {
+                                                    app.view = AppView::Detail;
+                                                }
+                                            }
+                                            KeyCode::Esc => {
+                                                if app.assigned_to_me_filter_on {
+                                                    app.toggle_assigned_to_me_filter()
+                                                }
+                                                app.is_list_details_hover_visible = false;
+                                                if !app.filter_query.is_empty() {
+                                                    app.filter_query.clear();
+                                                    app.list_state.select(
+                                                        app.get_filtered_items().first().map(|_| 0),
+                                                    );
+                                                }
+                                            }
+                                            KeyCode::Up => {
+                                                app.is_list_details_hover_visible = false;
+                                                app.next();
+                                            }
+                                            KeyCode::Down => {
+                                                app.is_list_details_hover_visible = false;
+                                                app.previous();
+                                            }
+                                            _ => {}
+                                        }
+                                        app.last_key_press = None;
+                                    }
+                                }
+                                AppView::Detail => {
+                                    if let Some(c) = current_char {
+                                        let last_key = app.last_key_press;
+
+                                        if key_matches_sequence(c, last_key, &app.keys.quit) {
+                                            app.view = AppView::List
+                                        }
+                                    } else {
+                                        match key.code {
+                                            KeyCode::Esc => app.view = AppView::List,
+                                            _ => {}
                                         }
                                     }
-                                    KeyCode::Char('>') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.next_board();
-                                        return Ok(());
-                                    }
-                                    KeyCode::Char('<') => {
-                                        app.is_list_details_hover_visible = false;
-                                        app.previous_board();
-                                        return Ok(());
-                                    }
-                                    KeyCode::Char('K') => {
-                                        app.is_list_details_hover_visible = true;
-                                    }
-                                    KeyCode::Char('o') => app.open_item(),
-                                    KeyCode::Char('m') => app.toggle_assigned_to_me_filter(),
-                                    _ => {}
-                                },
-                                AppView::Detail => match key.code {
-                                    KeyCode::Char('q') | KeyCode::Esc => app.view = AppView::List,
-                                    KeyCode::Char('o') => app.open_item(),
-                                    _ => {}
-                                },
+                                }
                             }
                         }
                     }
