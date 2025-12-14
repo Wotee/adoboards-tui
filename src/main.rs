@@ -554,14 +554,15 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
 
 fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
     let area = f.area();
-    let block = Block::default().borders(Borders::ALL).title("Status");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Color::LightBlue)
+        .title("Status");
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
             message,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from("Press 'q' to quit."),
