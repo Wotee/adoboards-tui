@@ -1,5 +1,5 @@
-[default]
-common = "lol"
+[common]
+me = "Tarvus, Valtteri"
 
 [[boards]]
 organization = "waypoint-azure"

@@ -31,15 +31,15 @@ pub struct BoardConfig {
     team: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Default, Clone, Debug, Deserialize, Serialize)]
 pub struct CommonConfig {
-    common: String,
+    me: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default)]
-    common: Option<CommonConfig>,
+    common: CommonConfig,
     #[serde(default)]
     boards: Vec<BoardConfig>,
 }
@@ -184,12 +184,14 @@ struct App {
     all_boards: Vec<BoardConfig>,
     current_board_index: usize,
     is_waiting_for_g: bool,
+    me: String,
+    assigned_to_me_filter_on: bool,
 }
 
 impl App {
-    fn new(boards: Vec<BoardConfig>) -> App {
+    fn new(config: AppConfig) -> App {
         let mut list_state = ListState::default();
-        if !boards.is_empty() {
+        if !config.boards.is_empty() {
             list_state.select(Some(0));
         }
         App {
@@ -200,9 +202,11 @@ impl App {
             filter_query: String::new(),
             is_filtering: false,
             is_list_details_hover_visible: false,
-            all_boards: boards,
+            all_boards: config.boards,
             current_board_index: 0,
             is_waiting_for_g: false,
+            me: config.common.me,
+            assigned_to_me_filter_on: false,
         }
     }
 
@@ -260,20 +264,32 @@ impl App {
     }
 
     fn get_filtered_items(&self) -> Vec<&WorkItem> {
-        if self.filter_query.is_empty() {
-            return self.items.iter().collect();
-        }
-
-        let query = self.filter_query.to_lowercase();
-
         self.items
             .iter()
             .filter(|item| {
-                let id_match = item.id.to_string().contains(&query);
-                let title_match = item.title.to_lowercase().contains(&query);
-                id_match || title_match
+                // Apply assigned to me filter first
+                if self.assigned_to_me_filter_on {
+                    if !item.assigned_to.contains(&self.me) {
+                        return false;
+                    }
+                }
+                // Apply the text search filter
+                if !self.filter_query.is_empty() {
+                    let query = self.filter_query.to_lowercase();
+                    let id_match = item.id.to_string().contains(&query);
+                    let title_match = item.title.to_lowercase().contains(&query);
+                    return id_match || title_match;
+                }
+                true
             })
             .collect()
+    }
+
+    fn toggle_assigned_to_me_filter(&mut self) {
+        self.assigned_to_me_filter_on = !self.assigned_to_me_filter_on;
+        self.is_list_details_hover_visible = false;
+        self.list_state
+            .select(self.get_filtered_items().first().map(|_| 0));
     }
 
     fn load_data(&mut self, items: Vec<WorkItem>) {
@@ -326,7 +342,7 @@ impl App {
     }
 }
 
-fn load_config() -> Result<Vec<BoardConfig>> {
+fn load_config() -> Result<AppConfig> {
     let config_content = std::fs::read_to_string("config.toml")?;
     let app_config: AppConfig = toml::from_str(&config_content)?;
     if app_config.boards.is_empty() {
@@ -334,7 +350,12 @@ fn load_config() -> Result<Vec<BoardConfig>> {
             "Configuration file 'config.toml' is missing any board definitions."
         ));
     }
-    Ok(app_config.boards)
+    if app_config.common.me.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Configuration file 'config.toml' is missing common.me"
+        ));
+    }
+    Ok(app_config)
 }
 
 // --- TUI Drawing Functions ---
@@ -435,7 +456,15 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         })
         .collect();
 
-    let board_title = format!("{} Backlog", app.current_board().team);
+    let board_title: String = if app.assigned_to_me_filter_on {
+        format!(
+            "{} Backlog, Assigned to {}",
+            app.current_board().team,
+            app.me,
+        )
+    } else {
+        format!("{} Backlog", app.current_board().team)
+    };
 
     let list = List::new(list_items)
         .block(Block::default().borders(Borders::ALL).title(board_title))
@@ -708,6 +737,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                         }
                                     }
                                     KeyCode::Esc => {
+                                        if app.assigned_to_me_filter_on {
+                                            app.toggle_assigned_to_me_filter()
+                                        }
                                         app.is_list_details_hover_visible = false;
                                         if !app.filter_query.is_empty() {
                                             app.filter_query.clear();
@@ -730,6 +762,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                         app.is_list_details_hover_visible = true;
                                     }
                                     KeyCode::Char('o') => app.open_item(),
+                                    KeyCode::Char('m') => app.toggle_assigned_to_me_filter(),
                                     _ => {}
                                 },
                                 AppView::Detail => match key.code {

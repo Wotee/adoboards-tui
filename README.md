@@ -13,4 +13,4 @@ TUI to check the ADO without leaving the CLI
 - []: See parent/child items
 - []: Go to parent/child items
 - []: See iteration backlogs
-
+- []: View hotkeys
