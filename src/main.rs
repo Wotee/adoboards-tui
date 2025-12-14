@@ -340,43 +340,14 @@ impl App {
         self.loading_state = LoadingState::Loaded;
     }
 
-    fn previous(&mut self) {
-        let items_len = self.get_filtered_items().len();
-        if items_len == 0 {
-            self.list_state.select(None);
+    fn navigate_list(&mut self, direction: isize) {
+        let count = self.get_filtered_items().len();
+        if count == 0 {
             return;
         }
-
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    0
-                } else {
-                    i - 1
-                }
-            }
-            None => items_len - 1,
-        };
-        self.list_state.select(Some(i));
-    }
-
-    fn next(&mut self) {
-        let items_len = self.get_filtered_items().len();
-        if items_len == 0 {
-            self.list_state.select(None);
-            return;
-        }
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= items_len - 1 {
-                    items_len - 1
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        let current = self.list_state.selected().unwrap_or(0) as isize;
+        let next = (current + direction).clamp(0, count as isize - 1);
+        self.list_state.select(Some(next as usize));
     }
 }
 
@@ -449,7 +420,6 @@ fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     }
 }
 
-/// Renders the main List View (the board).
 fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     let constraints = if app.is_filtering {
         [Constraint::Min(0), Constraint::Length(3)]
@@ -792,14 +762,14 @@ fn run_app<B: ratatui::backend::Backend>(
                                         } else if key_matches_sequence(c, last_key, &app.keys.next)
                                         {
                                             app.is_list_details_hover_visible = false;
-                                            app.next();
+                                            app.navigate_list(1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.previous,
                                         ) {
                                             app.is_list_details_hover_visible = false;
-                                            app.previous();
+                                            app.navigate_list(-1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
@@ -852,11 +822,11 @@ fn run_app<B: ratatui::backend::Backend>(
                                             }
                                             KeyCode::Up => {
                                                 app.is_list_details_hover_visible = false;
-                                                app.next();
+                                                app.navigate_list(-1);
                                             }
                                             KeyCode::Down => {
                                                 app.is_list_details_hover_visible = false;
-                                                app.previous();
+                                                app.navigate_list(1);
                                             }
                                             _ => {}
                                         }
