@@ -326,19 +326,21 @@ fn load_config() -> Result<Vec<BoardConfig>> {
 
 // --- TUI Drawing Functions ---
 fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<Rect> {
-    let selected_index_in_filtered_list = app.list_state.selected()?;
-    let content_height = list_area.height.saturating_sub(2); // subtract top/bottom border
-    let selected_y_in_list =
-        list_area.y + 1 + (selected_index_in_filtered_list % content_height as usize) as u16;
+    let selected_index = app.list_state.selected()?;
+    let offset = app.list_state.offset();
 
-    let popup_height = 5; // Title, 2 content lines, 2 borders
+    let relative_y = (selected_index.saturating_sub(offset)) as u16;
+
+    let popup_height = 5;
     let popup_width = 45;
 
+    let selected_y_on_screen = list_area.y + 1 + relative_y;
+
     let mut x = list_area.x + 20;
-    let mut y = selected_y_in_list + 1; // Default: 1 line below the selected item
+    let mut y = selected_y_on_screen + 1;
 
     if y + popup_height > frame_area.height {
-        y = selected_y_in_list.saturating_sub(popup_height);
+        y = selected_y_on_screen.saturating_sub(popup_height);
     }
 
     y = y.max(frame_area.y);
@@ -347,7 +349,6 @@ fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<
         x = frame_area.width.saturating_sub(popup_width + 1);
     }
     x = x.max(frame_area.x + 1);
-
     Some(Rect {
         x,
         y,
