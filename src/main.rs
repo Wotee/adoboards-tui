@@ -37,81 +37,37 @@ pub struct CommonConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
 pub struct KeysConfig {
-    #[serde(default = "default_key_quit")]
     quit: String,
-    #[serde(default = "default_key_next")]
     next: String,
-    #[serde(default = "default_key_previous")]
     previous: String,
-    #[serde(default = "default_key_hover")]
     hover: String,
-    #[serde(default = "default_key_open")]
     open: String,
-    #[serde(default = "default_key_next_board")]
     next_board: String,
-    #[serde(default = "default_key_previous_board")]
     previous_board: String,
-    #[serde(default = "default_key_search")]
     search: String,
-    #[serde(default = "default_key_assigned_to_me_filter")]
     assigned_to_me_filter: String,
-    #[serde(default = "default_key_filter_jump_to_top")]
     jump_to_top: String,
-    #[serde(default = "default_key_filter_jump_to_end")]
     jump_to_end: String,
 }
 
 impl Default for KeysConfig {
     fn default() -> Self {
         KeysConfig {
-            quit: "q".into(),
-            next: "j".into(),
-            previous: "k".into(),
-            hover: "K".into(),
-            open: "o".into(),
-            next_board: ">".into(),
-            previous_board: "<".into(),
-            search: "/".into(),
-            assigned_to_me_filter: "m".into(),
-            jump_to_top: "gg".into(),
-            jump_to_end: "G".into(),
+            quit: "q".to_string(),
+            next: "j".to_string(),
+            previous: "k".to_string(),
+            hover: "K".to_string(),
+            open: "o".to_string(),
+            next_board: ">".to_string(),
+            previous_board: "<".to_string(),
+            search: "/".to_string(),
+            assigned_to_me_filter: "m".to_string(),
+            jump_to_top: "gg".to_string(),
+            jump_to_end: "G".to_string(),
         }
     }
-}
-
-fn default_key_quit() -> String {
-    "q".into()
-}
-fn default_key_previous() -> String {
-    "k".into()
-}
-fn default_key_next() -> String {
-    "j".into()
-}
-fn default_key_open() -> String {
-    "o".into()
-}
-fn default_key_hover() -> String {
-    "o".into()
-}
-fn default_key_previous_board() -> String {
-    "<".into()
-}
-fn default_key_next_board() -> String {
-    ">".into()
-}
-fn default_key_search() -> String {
-    "/".into()
-}
-fn default_key_assigned_to_me_filter() -> String {
-    "m".into()
-}
-fn default_key_filter_jump_to_top() -> String {
-    "gg".into()
-}
-fn default_key_filter_jump_to_end() -> String {
-    "G".into()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
