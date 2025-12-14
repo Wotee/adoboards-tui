@@ -301,6 +301,23 @@ impl App {
         self.get_filtered_items().get(selected_index).copied()
     }
 
+    fn clamp_selection(&mut self) {
+        let item_count = self.get_filtered_items().len();
+
+        if item_count == 0 {
+            self.list_state.select(None);
+            return;
+        }
+
+        if let Some(current_index) = self.list_state.selected() {
+            if current_index >= item_count {
+                self.list_state.select(Some(item_count - 1));
+            }
+        } else {
+            self.list_state.select(Some(0));
+        }
+    }
+
     fn get_filtered_items(&self) -> Vec<&WorkItem> {
         self.items
             .iter()
@@ -433,27 +450,6 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         .constraints(constraints.as_ref())
         .split(f.area());
 
-    let new_selection_index = {
-        let items_to_display_count = app.get_filtered_items().len();
-        let current_selected = app.list_state.selected();
-
-        if current_selected.is_some()
-            && current_selected.unwrap() >= items_to_display_count
-            && items_to_display_count > 0
-        {
-            Some(items_to_display_count - 1)
-        } else if items_to_display_count == 0 {
-            None
-        } else if current_selected.is_none() && items_to_display_count > 0 {
-            Some(0)
-        } else {
-            current_selected
-        }
-    };
-
-    if new_selection_index != app.list_state.selected() {
-        app.list_state.select(new_selection_index);
-    }
     let items_to_display = app.get_filtered_items();
 
     let list_items: Vec<ListItem> = items_to_display
@@ -475,7 +471,12 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     };
 
     let list = List::new(list_items)
-        .block(Block::default().borders(Borders::ALL).title(board_title))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Color::LightBlue)
+                .title(board_title),
+        )
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -706,20 +707,17 @@ fn run_app<B: ratatui::backend::Backend>(
                                     app.is_filtering = false;
                                     if key.code == KeyCode::Esc {
                                         app.filter_query.clear();
+                                        app.clamp_selection();
                                     }
-                                    app.list_state
-                                        .select(app.get_filtered_items().first().map(|_| 0));
                                 }
                                 KeyCode::Backspace => {
                                     app.filter_query.pop();
-                                    app.list_state
-                                        .select(app.get_filtered_items().first().map(|_| 0));
+                                    app.clamp_selection();
                                 }
                                 KeyCode::Char(c) => {
                                     if c != '/' {
                                         app.filter_query.push(c);
-                                        app.list_state
-                                            .select(app.get_filtered_items().first().map(|_| 0));
+                                        app.clamp_selection();
                                     }
                                 }
                                 _ => {}
@@ -756,9 +754,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                             app.is_list_details_hover_visible = false;
                                             app.is_filtering = true;
                                             app.filter_query.clear();
-                                            app.list_state.select(
-                                                app.get_filtered_items().first().map(|_| 0),
-                                            );
+                                            app.clamp_selection();
                                         } else if key_matches_sequence(c, last_key, &app.keys.next)
                                         {
                                             app.is_list_details_hover_visible = false;
@@ -815,9 +811,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 app.is_list_details_hover_visible = false;
                                                 if !app.filter_query.is_empty() {
                                                     app.filter_query.clear();
-                                                    app.list_state.select(
-                                                        app.get_filtered_items().first().map(|_| 0),
-                                                    );
+                                                    app.clamp_selection();
                                                 }
                                             }
                                             KeyCode::Up => {
