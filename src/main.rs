@@ -748,12 +748,12 @@ fn run_app<B: ratatui::backend::Backend>(
                                             );
                                         }
                                     }
-                                    KeyCode::Char('n') => {
+                                    KeyCode::Char('>') => {
                                         app.is_list_details_hover_visible = false;
                                         app.next_board();
                                         return Ok(());
                                     }
-                                    KeyCode::Char('p') => {
+                                    KeyCode::Char('<') => {
                                         app.is_list_details_hover_visible = false;
                                         app.previous_board();
                                         return Ok(());
