@@ -1,6 +1,7 @@
 use anyhow::Result;
 use azure_devops_rust_api::Credential;
 use azure_devops_rust_api::wit::ClientBuilder as WitClientBuilder;
+use azure_devops_rust_api::wit::models::WorkItem as ADOWorkItem;
 use azure_devops_rust_api::work::ClientBuilder as WorkClientBuilder;
 use azure_identity::AzureCliCredential;
 use crossterm::{
@@ -92,6 +93,35 @@ pub struct WorkItem {
     acceptance_criteria: String,
 }
 
+impl From<ADOWorkItem> for WorkItem {
+    fn from(item: ADOWorkItem) -> Self {
+        let get_and_clean_field = |key: &str| -> String {
+            item.fields
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map_or("".to_string(), clean_ado_text)
+        };
+        let assigned_to_name: String = item
+            .fields
+            .get("System.AssignedTo")
+            .and_then(|assigned_to| assigned_to.as_object())
+            .and_then(|assigned_to| assigned_to.get("displayName"))
+            .and_then(|display_name| display_name.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or("Unassigned".to_string());
+
+        WorkItem {
+            id: item.id as u32,
+            title: get_and_clean_field("System.Title"),
+            work_item_type: get_and_clean_field("System.WorkItemType"),
+            description: get_and_clean_field("System.Description"),
+            acceptance_criteria: get_and_clean_field("Microsoft.VSTS.Common.AcceptanceCriteria"),
+            assigned_to: assigned_to_name,
+            state: get_and_clean_field("System.State"),
+        }
+    }
+}
+
 lazy_static! {
     /// Regex to strip common HTML tags (like <p>, <div>, <span>, <img>, etc.)
     static ref HTML_TAG_REGEX: Regex = Regex::new(r"<[^>]*>").unwrap();
@@ -162,36 +192,8 @@ pub async fn get_backlog(
         .list(organization, ids, project)
         .await?;
 
-    let mut app_items: Vec<WorkItem> = Vec::new();
-
-    for item in full_items.value {
-        let get_and_clean_field = |key: &str| -> String {
-            item.fields
-                .get(key)
-                .and_then(|v| v.as_str())
-                .map_or("N/A".to_string(), clean_ado_text)
-        };
-        let assigned_to_name: String = item
-            .fields
-            .get("System.AssignedTo")
-            .and_then(|assigned_to| assigned_to.as_object())
-            .and_then(|assigned_to| assigned_to.get("displayName"))
-            .and_then(|display_name| display_name.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or("Unassigned".to_string());
-
-        app_items.push(WorkItem {
-            id: item.id as u32,
-            title: get_and_clean_field("System.Title"),
-            work_item_type: get_and_clean_field("System.WorkItemType"),
-            description: get_and_clean_field("System.Description"),
-            acceptance_criteria: get_and_clean_field("Microsoft.VSTS.Common.AcceptanceCriteria"),
-            assigned_to: assigned_to_name,
-            state: get_and_clean_field("System.State"),
-        });
-    }
-
-    return Ok(app_items);
+    let items = full_items.value.into_iter().map(WorkItem::from).collect();
+    Ok(items)
 }
 
 // --- Application State ---
