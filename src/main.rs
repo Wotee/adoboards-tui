@@ -494,7 +494,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     if app.is_filtering {
         let filter_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow))
+            .border_style(Style::default().fg(Color::LightBlue))
             .title("Filter Mode");
 
         let filter_text = Line::from(format!("/{}", app.filter_query));
@@ -529,11 +529,11 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         )
         .split(f.area());
 
-    let title_text = format!("{}: {} {}", item.work_item_type, item.id, item.title);
+    let title_text = format!("{}: {}", item.id, item.title);
     let title_block = Block::default()
-        .title("Work Item Details (Press ESC or 'q' to go back)")
+        .title(item.work_item_type.to_string())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(Color::LightBlue));
     let title_paragraph = Paragraph::new(title_text)
         .style(Style::default().add_modifier(Modifier::BOLD))
         .block(title_block);
