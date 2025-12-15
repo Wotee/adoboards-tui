@@ -450,7 +450,6 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints(constraints.as_ref())
         .split(f.area());
 
@@ -520,7 +519,6 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
         .constraints(
             [
                 Constraint::Length(3), // Title
