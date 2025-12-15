@@ -837,6 +837,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                         if key_matches_sequence(c, last_key, &app.keys.quit) {
                                             app.view = AppView::List
                                         }
+                                        if key_matches_sequence(c, last_key, &app.keys.open) {
+                                            app.open_item()
+                                        }
                                     } else {
                                         match key.code {
                                             KeyCode::Esc => app.view = AppView::List,
