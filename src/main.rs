@@ -51,6 +51,7 @@ pub struct KeysConfig {
     assigned_to_me_filter: String,
     jump_to_top: String,
     jump_to_end: String,
+    refresh: String,
 }
 
 impl Default for KeysConfig {
@@ -67,6 +68,7 @@ impl Default for KeysConfig {
             assigned_to_me_filter: "m".to_string(),
             jump_to_top: "gg".to_string(),
             jump_to_end: "G".to_string(),
+            refresh: "r".to_string(),
         }
     }
 }
@@ -797,7 +799,15 @@ fn run_app<B: ratatui::backend::Backend>(
                                             &app.keys.assigned_to_me_filter,
                                         ) {
                                             app.toggle_assigned_to_me_filter()
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.refresh,
+                                        ) {
+                                            app.loading_state = LoadingState::Loading;
+                                            return Ok(());
                                         }
+
                                         app.last_key_press = Some(key.code);
                                     } else {
                                         match key.code {
