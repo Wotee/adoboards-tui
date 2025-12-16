@@ -54,6 +54,7 @@ pub struct KeysConfig {
     jump_to_top: String,
     jump_to_end: String,
     refresh: String,
+    edit_config: String,
 }
 
 impl Default for KeysConfig {
@@ -71,6 +72,7 @@ impl Default for KeysConfig {
             jump_to_top: "gg".to_string(),
             jump_to_end: "G".to_string(),
             refresh: "r".to_string(),
+            edit_config: "c".to_string(),
         }
     }
 }
@@ -834,6 +836,13 @@ fn run_app<B: ratatui::backend::Backend>(
                                         ) {
                                             app.loading_state = LoadingState::Loading;
                                             return Ok(());
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.edit_config,
+                                        ) {
+                                            let _ = open_config();
+                                            std::process::exit(1);
                                         }
 
                                         app.last_key_press = Some(key.code);
