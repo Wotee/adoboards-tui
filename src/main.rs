@@ -21,7 +21,9 @@ use ratatui::{
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, io, time::Duration};
+use std::{error::Error, io, process::Command, time::Duration};
+
+const APPNAME: &str = "adoboards";
 
 // --- Data Model Structs ---
 
@@ -83,7 +85,16 @@ pub struct AppConfig {
     keys: KeysConfig,
 }
 
-/// Represents a simple work item returned by the API.
+impl Default for AppConfig {
+    fn default() -> Self {
+        AppConfig {
+            common: CommonConfig { me: "".to_string() },
+            boards: Vec::new(),
+            keys: KeysConfig::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct WorkItem {
     id: u32,
@@ -372,22 +383,6 @@ impl App {
     }
 }
 
-fn load_config() -> Result<AppConfig> {
-    let config_content = std::fs::read_to_string("config.toml")?;
-    let app_config: AppConfig = toml::from_str(&config_content)?;
-    if app_config.boards.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Configuration file 'config.toml' is missing any board definitions."
-        ));
-    }
-    if app_config.common.me.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Configuration file 'config.toml' is missing common.me"
-        ));
-    }
-    Ok(app_config)
-}
-
 // --- TUI Drawing Functions ---
 fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<Rect> {
     let selected_index = app.list_state.selected()?;
@@ -467,7 +462,11 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         format!(
             "{} Backlog, Assigned to {}",
             app.current_board().team,
-            app.me,
+            if app.me.is_empty() {
+                "<name not configured>".to_string()
+            } else {
+                app.me.to_string()
+            },
         )
     } else {
         format!("{} Backlog", app.current_board().team)
@@ -590,6 +589,32 @@ fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
     f.render_widget(paragraph, chunks[1]);
 }
 
+fn open_config() -> Result<(), Box<dyn std::error::Error>> {
+    let file_path = confy::get_configuration_file_path(APPNAME, None)?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
+        if cfg!(target_os = "windows") {
+            "notepad".to_string()
+        } else {
+            "vi".to_string()
+        }
+    });
+
+    println!(
+        "Opening configuration file in {}: {}",
+        editor,
+        file_path.display()
+    );
+
+    let mut command = Command::new(&editor);
+    command.arg(file_path);
+    let status = command.status()?;
+    if !status.success() {
+        eprintln!("Failed to open editor: {}", status);
+        return Err("Editor command failed.".into());
+    }
+    Ok(())
+}
+
 // --- Main Loop and Setup ---
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -598,16 +623,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-
-    let all_boards = match load_config() {
-        Ok(boards) => boards,
+    let cfg: AppConfig = match confy::load(APPNAME, None) {
+        Ok(conf) => conf,
         Err(e) => {
-            eprintln!("Configuration Error: {}", e);
-            return Err(e.into());
+            eprintln!("Error loading configuration: {}", e);
+            AppConfig::default()
         }
     };
+    if cfg.boards.is_empty() {
+        println!("Missing boards in config");
+        let _ = open_config();
+        println!("Reopen {}", APPNAME);
+        std::process::exit(1);
+    }
 
-    let mut app = App::new(all_boards);
+    let mut app = App::new(cfg);
     let mut res = Ok(());
 
     while !matches!(app.loading_state, LoadingState::Error(_)) {

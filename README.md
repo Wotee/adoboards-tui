@@ -9,6 +9,7 @@ TUI to check the ADO without leaving the CLI
 ### Common
 - []: Configurable "backlog level"
 - []: View hotkeys (for current view)
+- []: Crashes if not authenticated
 ### List view
 - []: Reload backlog
 - []: Cache backlogs when using multiple?
