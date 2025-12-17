@@ -101,7 +101,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
             common: CommonConfig { me: "".to_string() },
-            boards: Vec::<BoardConfig>::new(),
+            boards: vec![BoardConfig::default()],
             keys: KeysConfig::default(),
         }
     }
@@ -635,51 +635,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    let mut config_ok = true;
     let cfg: AppConfig = match confy::load(APPNAME, None) {
         Ok(conf) => conf,
         Err(e) => {
             eprintln!("Error loading configuration: {}", e);
+            config_ok = false;
             AppConfig::default()
         }
     };
     if cfg.boards.is_empty() {
         println!("Missing boards in config");
         let _ = open_config();
-        println!("Reopen {}", APPNAME);
-        std::process::exit(1);
+        eprintln!("Reopen {}", APPNAME);
+        config_ok = false;
     }
 
     let mut app = App::new(cfg);
     let mut res = Ok(());
 
-    while !matches!(app.loading_state, LoadingState::Error(_)) {
-        if matches!(app.loading_state, LoadingState::Loading) {
-            let board = app.current_board();
-            let board_title = format!("{} Backlog", board.team);
-            terminal.draw(|f| draw_status_screen(f, &format!("Loading {}...", board_title)))?;
+    if config_ok {
+        while !matches!(app.loading_state, LoadingState::Error(_)) {
+            if matches!(app.loading_state, LoadingState::Loading) {
+                let board = app.current_board();
+                let board_title = format!("{} Backlog", board.team);
+                terminal.draw(|f| draw_status_screen(f, &format!("Loading {}...", board_title)))?;
 
-            let fetch_result = get_backlog(&board.organization, &board.project, &board.team).await;
-            match fetch_result {
-                Ok(items) => {
-                    app.load_data(items);
+                let fetch_result =
+                    get_backlog(&board.organization, &board.project, &board.team).await;
+                match fetch_result {
+                    Ok(items) => {
+                        app.load_data(items);
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to fetch data: {:?}", e);
+                        eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);
+                        app.loading_state = LoadingState::Error(error_msg);
+                    }
                 }
-                Err(e) => {
-                    let error_msg = format!("Failed to fetch data: {:?}", e);
-                    eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);
-                    app.loading_state = LoadingState::Error(error_msg);
-                }
+                continue;
             }
-            continue;
-        }
-        res = run_app(&mut terminal, &mut app);
-        if res.is_err() {
+            res = run_app(&mut terminal, &mut app);
+            if res.is_err() {
+                break;
+            }
+
+            if matches!(app.loading_state, LoadingState::Loading) {
+                continue;
+            }
             break;
         }
-
-        if matches!(app.loading_state, LoadingState::Loading) {
-            continue;
-        }
-        break;
     }
 
     disable_raw_mode()?;
