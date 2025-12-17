@@ -173,13 +173,34 @@ fn get_credential() -> Result<Credential> {
     }
 }
 
-pub async fn get_backlog(
+async fn get_iteration_ids(
     organization: &str,
     project: &str,
     team: &str,
-) -> Result<Vec<WorkItem>, Box<dyn Error>> {
+    iteration: &str,
+) -> Result<Vec<i32>, Box<dyn Error>> {
     let credential = get_credential()?;
-    let work_client = WorkClientBuilder::new(credential.clone()).build();
+    let work_client = WorkClientBuilder::new(credential).build();
+    let iteration_work_items = work_client
+        .iterations_client()
+        .get_iteration_work_items(organization, project, iteration, team)
+        .await?;
+    let work_item_ids: Vec<i32> = iteration_work_items
+        .work_item_relations
+        .into_iter()
+        .filter_map(|wi_link| wi_link.target)
+        .filter_map(|wi| wi.id)
+        .collect();
+    Ok(work_item_ids)
+}
+
+pub async fn get_backlog_ids(
+    organization: &str,
+    project: &str,
+    team: &str,
+) -> Result<Vec<i32>, Box<dyn Error>> {
+    let credential = get_credential()?;
+    let work_client = WorkClientBuilder::new(credential).build();
 
     // Black magic string
     let backlog_level = "Microsoft.RequirementCategory";
@@ -196,13 +217,15 @@ pub async fn get_backlog(
         .filter_map(|wi| wi.id)
         .collect();
 
-    if work_item_ids.is_empty() {
-        println!(
-            "No work items found on the backlog level '{}'",
-            backlog_level
-        );
-        return Ok(Vec::new());
-    }
+    Ok(work_item_ids)
+}
+
+pub async fn get_items(
+    organization: &str,
+    project: &str,
+    work_item_ids: Vec<i32>,
+) -> Result<Vec<WorkItem>, Box<dyn Error>> {
+    let credential = get_credential()?;
 
     let ids: String = work_item_ids
         .into_iter()
@@ -667,8 +690,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let board_title = format!("{} Backlog", board.team);
                 terminal.draw(|f| draw_status_screen(f, &format!("Loading {}...", board_title)))?;
 
-                let fetch_result =
-                    get_backlog(&board.organization, &board.project, &board.team).await;
+                let fetch_result: Result<Vec<WorkItem>, Box<dyn Error>> = {
+                    let ids =
+                        get_backlog_ids(&board.organization, &board.project, &board.team).await?;
+                    let items = get_items(&board.organization, &board.project, ids).await?;
+                    Ok(items)
+                };
                 match fetch_result {
                     Ok(items) => {
                         app.load_data(items);
@@ -863,7 +890,10 @@ fn run_app<B: ratatui::backend::Backend>(
                                             &app.keys.edit_config,
                                         ) {
                                             let _ = open_config();
-                                            std::process::exit(1);
+                                            eprintln!(
+                                                "Reopen adoboards for changes to take effect"
+                                            );
+                                            return Ok(());
                                         }
 
                                         app.last_key_press = Some(key.code);
