@@ -34,6 +34,16 @@ pub struct BoardConfig {
     team: String,
 }
 
+impl Default for BoardConfig {
+    fn default() -> Self {
+        BoardConfig {
+            organization: "<organization>".to_string(),
+            project: "<project>".to_string(),
+            team: "<team>".to_string(),
+        }
+    }
+}
+
 #[derive(Default, Clone, Debug, Deserialize, Serialize)]
 pub struct CommonConfig {
     me: String,
@@ -91,7 +101,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
             common: CommonConfig { me: "".to_string() },
-            boards: Vec::new(),
+            boards: Vec::<BoardConfig>::new(),
             keys: KeysConfig::default(),
         }
     }
@@ -693,17 +703,17 @@ fn key_matches_sequence(
     last_key: Option<KeyCode>,
     target_sequence: &str,
 ) -> bool {
-    if target_sequence.len() == 1 {
-        return target_sequence.chars().next() == Some(current_key);
-    }
-
     if target_sequence.len() == 2 {
         let first_char = target_sequence.chars().next().unwrap();
         let second_char = target_sequence.chars().nth(1).unwrap();
         return last_key == Some(KeyCode::Char(first_char)) && current_key == second_char;
     }
 
-    // No longer combinations supported for now
+    if target_sequence.len() == 1 {
+        return target_sequence.chars().next() == Some(current_key);
+    }
+
+    // Longer combinations not supported for now
     false
 }
 
