@@ -46,6 +46,7 @@ Locations:
 * Linux: ~/.config/adoboards/default-config.toml
 * macOS: ~/Library/Application Support/adoboards/default-config.toml
 * Windows: %APPDATA%\adoboards\default-config.toml
+
 After editing the config file adoboards will automatically exit. Relaunch it so the new configuration takes place.
 
 ### Common
@@ -112,37 +113,56 @@ cargo install --path .
 ```
 
 ### 🏠 Home Manager Setup
-Add adoboards to your declarative configuration for the ultimate Nix experience.
+Add adoboards to your declarative configuration for the ultimate Nix experience with automatic configuration management.
 
-Add to flake.nix inputs:
-```nix
-inputs.adoboards.url = "github:Wotee/adoboards-tui";
-```
-then add extraSpecialArgs to your `homeManagerConfiguration`
-```nix
-"example" = home-manager.lib.homeManagerConfiguration {
-    inherit pkgs;
-    extraSpecialArgs = { inherit adoboards-flake; };
-    modules = [
-        ...
-```
-
-Add to home.packages:
+#### Step 1: Add to flake inputs
 ```nix
 {
-  config,
-  pkgs,
-  adoboards-flake, # Add this one!
-  lib,
-  ...
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    home-manager.url = "github:nix-community/home-manager";
+    adoboards.url = "github:Wotee/adoboards-tui";
+  };
 }
 ```
-and finally
+
+#### Step 2: Add module and configure
 ```nix
-home.packages = [
-  inputs.adoboards.packages.${pkgs.system}.default
-];
+outputs = { self, nixpkgs, home-manager, adoboards, ... }: {
+  homeConfigurations.yourusername = home-manager.lib.homeManagerConfiguration {
+    pkgs = nixpkgs.legacyPackages.x86_64-linux;  # or x86_64-darwin for macOS
+    modules = [
+      adoboards.homeManagerModules.default
+      {
+        # Install the package
+        home.packages = [ adoboards.packages.x86_64-linux.default ];
+        
+        # Declaratively configure your boards
+        programs.adoboards = {
+          enable = true;
+          me = "John Doe";  # Your displayName in Azure DevOps (defaults to username)
+          boards = [
+            {
+              organization = "myorg";
+              project = "myproject";
+              team = "myproject Team";
+            }
+            # Add more boards as needed
+          ];
+          # Optionally customize keyboard shortcuts:
+          # keys.quit = "q";
+          # keys.next = "j";
+          # ... etc
+        };
+      }
+    ];
+  };
+}
 ```
+
+This will automatically create the configuration file at the correct location for your OS and manage it declaratively. Changes to your configuration will be applied when you rebuild your Home Manager setup.
+
+For nix-darwin users, the same module can be used in your Darwin configuration. See [NIX-CONFIG.md](NIX-CONFIG.md) for detailed examples.
 
 ## 🛠️ Development
 

@@ -1,0 +1,82 @@
+# AdoBoards TUI - AI Development Context
+
+## Project Overview
+A terminal-based board manager for Azure DevOps built with Rust. Provides a fast TUI interface for browsing and managing work items.
+
+## Tech Stack
+- **Language**: Rust (edition 2024)
+- **TUI Framework**: ratatui + crossterm
+- **Async Runtime**: tokio
+- **Azure DevOps API**: azure_devops_rust_api
+- **Config**: confy + toml
+
+## Project Structure
+```
+src/
+  main.rs      # Main application (926 lines) - TUI logic, Azure DevOps integration
+Cargo.toml     # Dependencies and project metadata
+flake.nix      # Nix development environment
+```
+
+## Key Features
+- Browse/filter work items by ID, title, or assignment
+- View work item details
+- Multiple backlog support
+- Azure CLI or PAT authentication
+- Platform-specific config file locations
+
+## Build & Run
+```bash
+cargo build
+cargo run
+```
+
+## Authentication
+Supports two methods:
+1. Azure CLI: `az login`
+2. PAT via `AZURE_DEVOPS_EXT_PAT` environment variable
+
+## Configuration
+Config file created on first run at:
+- Linux: `~/.config/adoboards/default-config.toml`
+- macOS: `~/Library/Application Support/adoboards/default-config.toml`
+- Windows: `%APPDATA%\adoboards\default-config.toml`
+
+## Development Notes
+- Single main.rs file (consider refactoring into modules for larger features)
+- Uses anyhow for error handling
+- HTML entity decoding for work item content
+- State management via custom structs (BoardConfig, CommonConfig)
+
+## Instructions for AI Assistants
+
+### ⚠️ CRITICAL CONSTRAINT ⚠️
+**DO NOT TOUCH RUST CODE OR RUST SETUP**
+- Never modify `src/main.rs` or any Rust source files
+- Never modify `Cargo.toml` or suggest Rust dependency changes
+- Never suggest Rust refactoring, code improvements, or features
+- Never run Rust commands (cargo build, cargo check, cargo fmt, etc.)
+
+**ONLY WORK ON NIX FILES**
+- `flake.nix` - Nix flake configuration
+- `shell.nix` - Nix shell environment
+- Any other Nix-related configuration
+
+### Nix Development Guidelines
+- Follow Nix idioms and best practices
+- Ensure compatibility with the Rust toolchain already specified
+- Test changes with `nix develop` or `nix build`
+- Keep flake inputs up to date but stable
+- Document any Nix environment changes
+
+### Common Nix Tasks
+- **Environment setup**: Adding development tools to the shell
+- **Build configuration**: Adjusting flake outputs for different targets
+- **Dependencies**: System-level packages needed for the project
+- **CI/CD**: Nix-based build and test workflows
+
+### What to Watch For
+- **Rust toolchain**: Ensure Nix provides compatible Rust version
+- **System dependencies**: Azure CLI or other tools needed for runtime
+- **Cross-platform**: Nix configuration should work on Linux and macOS
+- **Reproducibility**: Pin inputs and avoid impure operations
