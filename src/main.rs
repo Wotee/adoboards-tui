@@ -27,7 +27,7 @@ const APPNAME: &str = "adoboards";
 
 // --- Data Model Structs ---
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct BoardConfig {
     organization: String,
     project: String,
@@ -635,21 +635,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let mut config_ok = true;
     let cfg: AppConfig = match confy::load(APPNAME, None) {
         Ok(conf) => conf,
         Err(e) => {
             eprintln!("Error loading configuration: {}", e);
-            config_ok = false;
             AppConfig::default()
         }
     };
-    if cfg.boards.is_empty() {
-        println!("Missing boards in config");
-        let _ = open_config();
-        eprintln!("Reopen {}", APPNAME);
-        config_ok = false;
-    }
+    let default_item = BoardConfig::default();
+    let config_ok = match cfg.boards.as_slice() {
+        [] => {
+            let _ = open_config();
+            eprintln!("Reopen {}", APPNAME);
+            false
+        }
+        [item] if item == &default_item => {
+            let _ = open_config();
+            eprintln!("Reopen {}", APPNAME);
+            false
+        }
+        _ => true,
+    };
 
     let mut app = App::new(cfg);
     let mut res = Ok(());
