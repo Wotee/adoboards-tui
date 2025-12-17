@@ -116,13 +116,26 @@ Add adoboards to your declarative configuration for the ultimate Nix experience.
 
 Add to flake.nix inputs:
 ```nix
-inputs.adoboards.url = "github:Wotee/adoboards-tui";
+adoboards = {
+    url = "github:Wotee/adoboards-tui";
+    inputs.nixpkgs.follows = "nixpkgs";
+};
 ```
+add adoboads to flake.nix outputs:
+```nix
+outputs = {
+    nixpkgs,
+    home-manager,
+    adoboards,
+    ...
+};
+```
+
 then add extraSpecialArgs to your `homeManagerConfiguration`
 ```nix
 "example" = home-manager.lib.homeManagerConfiguration {
     inherit pkgs;
-    extraSpecialArgs = { inherit adoboards-flake; };
+    extraSpecialArgs = { inherit adoboards; };
     modules = [
         ...
 ```
@@ -132,7 +145,7 @@ Add to home.packages:
 {
   config,
   pkgs,
-  adoboards-flake, # Add this one!
+  adoboards, # Add this one!
   lib,
   ...
 }
