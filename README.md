@@ -94,6 +94,10 @@ Hotkeys are configurable. The default keys are:
 ---
 
 ## 🚀 Installation
+
+### Prerequisites
+On WSL `wslu` (or some other tool for `xdg-open` support) is needed for opening the work items in browser.
+
 ### ❄️ Using Nix (Recommended)
 If you have Nix installed with Flakes enabled, you can run adoboards without even installing it:
 ```bash
