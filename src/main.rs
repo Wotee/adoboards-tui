@@ -258,18 +258,44 @@ enum LoadingState {
     Error(String),
 }
 
-struct App {
-    view: AppView,
-    items: Vec<WorkItem>,
+struct ListViewState {
     list_state: ListState,
-    loading_state: LoadingState,
     filter_query: String,
     is_filtering: bool,
     is_list_details_hover_visible: bool,
+    assigned_to_me_filter_on: bool,
+}
+
+impl ListViewState {
+    fn new(list_state: ListState) -> Self {
+        Self {
+            list_state,
+            filter_query: String::new(),
+            is_filtering: false,
+            is_list_details_hover_visible: false,
+            assigned_to_me_filter_on: false,
+        }
+    }
+}
+
+impl Default for ListViewState {
+    fn default() -> Self {
+        Self::new(ListState::default())
+    }
+}
+
+#[derive(Default)]
+struct DetailViewState {}
+
+struct App {
+    view: AppView,
+    items: Vec<WorkItem>,
+    list_view_state: ListViewState,
+    detail_view_state: DetailViewState,
+    loading_state: LoadingState,
     all_boards: Vec<BoardConfig>,
     current_board_index: usize,
     me: String,
-    assigned_to_me_filter_on: bool,
     keys: KeysConfig,
     // To support sequences like 'gg'
     last_key_press: Option<KeyCode>,
@@ -284,15 +310,12 @@ impl App {
         App {
             view: AppView::List,
             items: Vec::new(),
-            list_state: ListState::default(),
+            list_view_state: ListViewState::new(list_state),
+            detail_view_state: DetailViewState::default(),
             loading_state: LoadingState::Loading,
-            filter_query: String::new(),
-            is_filtering: false,
-            is_list_details_hover_visible: false,
             all_boards: config.boards,
             current_board_index: 0,
             me: config.common.me,
-            assigned_to_me_filter_on: false,
             keys: config.keys,
             last_key_press: None,
         }
@@ -300,14 +323,14 @@ impl App {
 
     fn jump_to_start(&mut self) {
         if !self.get_filtered_items().is_empty() {
-            self.list_state.select(Some(0));
+            self.list_view_state.list_state.select(Some(0));
         }
     }
 
     fn jump_to_end(&mut self) {
         let items_len = self.get_filtered_items().len();
         if items_len > 0 {
-            self.list_state.select(Some(items_len - 1));
+            self.list_view_state.list_state.select(Some(items_len - 1));
         }
     }
 
@@ -347,7 +370,7 @@ impl App {
     }
 
     fn get_selected_item(&self) -> Option<&WorkItem> {
-        let selected_index = self.list_state.selected()?;
+        let selected_index = self.list_view_state.list_state.selected()?;
         self.get_filtered_items().get(selected_index).copied()
     }
 
@@ -355,16 +378,18 @@ impl App {
         let item_count = self.get_filtered_items().len();
 
         if item_count == 0 {
-            self.list_state.select(None);
+            self.list_view_state.list_state.select(None);
             return;
         }
 
-        if let Some(current_index) = self.list_state.selected() {
+        if let Some(current_index) = self.list_view_state.list_state.selected() {
             if current_index >= item_count {
-                self.list_state.select(Some(item_count - 1));
+                self.list_view_state
+                    .list_state
+                    .select(Some(item_count - 1));
             }
         } else {
-            self.list_state.select(Some(0));
+            self.list_view_state.list_state.select(Some(0));
         }
     }
 
@@ -373,14 +398,14 @@ impl App {
             .iter()
             .filter(|item| {
                 // Apply assigned to me filter first
-                if self.assigned_to_me_filter_on {
+                if self.list_view_state.assigned_to_me_filter_on {
                     if !item.assigned_to.contains(&self.me) {
                         return false;
                     }
                 }
                 // Apply the text search filter
-                if !self.filter_query.is_empty() {
-                    let query = self.filter_query.to_lowercase();
+                if !self.list_view_state.filter_query.is_empty() {
+                    let query = self.list_view_state.filter_query.to_lowercase();
                     let id_match = item.id.to_string().contains(&query);
                     let title_match = item.title.to_lowercase().contains(&query);
                     return id_match || title_match;
@@ -391,9 +416,10 @@ impl App {
     }
 
     fn toggle_assigned_to_me_filter(&mut self) {
-        self.assigned_to_me_filter_on = !self.assigned_to_me_filter_on;
-        self.is_list_details_hover_visible = false;
-        self.list_state
+        self.list_view_state.assigned_to_me_filter_on = !self.list_view_state.assigned_to_me_filter_on;
+        self.list_view_state.is_list_details_hover_visible = false;
+        self.list_view_state
+            .list_state
             .select(self.get_filtered_items().first().map(|_| 0));
     }
 
@@ -403,7 +429,7 @@ impl App {
             list_state.select(Some(0));
         }
         self.items = items;
-        self.list_state = list_state;
+        self.list_view_state.list_state = list_state;
         self.loading_state = LoadingState::Loaded;
     }
 
@@ -412,16 +438,16 @@ impl App {
         if count == 0 {
             return;
         }
-        let current = self.list_state.selected().unwrap_or(0) as isize;
+        let current = self.list_view_state.list_state.selected().unwrap_or(0) as isize;
         let next = (current + direction).clamp(0, count as isize - 1);
-        self.list_state.select(Some(next as usize));
+        self.list_view_state.list_state.select(Some(next as usize));
     }
 }
 
 // --- TUI Drawing Functions ---
 fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<Rect> {
-    let selected_index = app.list_state.selected()?;
-    let offset = app.list_state.offset();
+    let selected_index = app.list_view_state.list_state.selected()?;
+    let offset = app.list_view_state.list_state.offset();
 
     let relative_y = (selected_index.saturating_sub(offset)) as u16;
 
@@ -452,7 +478,7 @@ fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<
 }
 
 fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
-    if app.is_list_details_hover_visible {
+    if app.list_view_state.is_list_details_hover_visible {
         if let Some(item) = app.get_selected_item() {
             if let Some(popup_rect) = calculate_popup_rect(f.area(), app, list_area) {
                 f.render_widget(Clear, popup_rect);
@@ -472,7 +498,7 @@ fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
 }
 
 fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
-    let constraints = if app.is_filtering {
+    let constraints = if app.list_view_state.is_filtering {
         [Constraint::Min(0), Constraint::Length(3)]
     } else {
         [Constraint::Min(0), Constraint::Length(0)]
@@ -493,7 +519,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         })
         .collect();
 
-    let board_title: String = if app.assigned_to_me_filter_on {
+    let board_title: String = if app.list_view_state.assigned_to_me_filter_on {
         format!(
             "{} Backlog, Assigned to {}",
             app.current_board().team,
@@ -522,22 +548,22 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         );
 
     let list_area = chunks[0];
-    f.render_stateful_widget(list, chunks[0], &mut app.list_state);
+    f.render_stateful_widget(list, chunks[0], &mut app.list_view_state.list_state);
 
     draw_hover_popup(f, app, list_area);
 
-    if app.is_filtering {
+    if app.list_view_state.is_filtering {
         let filter_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::LightBlue))
             .title("Filter Mode");
 
-        let filter_text = Line::from(format!("/{}", app.filter_query));
+        let filter_text = Line::from(format!("/{}", app.list_view_state.filter_query));
         let filter_paragraph = Paragraph::new(filter_text).block(filter_block);
         f.render_widget(filter_paragraph, chunks[1]);
 
         // Set the cursor position for input
-        let x = chunks[1].x + 2 + app.filter_query.len() as u16;
+        let x = chunks[1].x + 2 + app.list_view_state.filter_query.len() as u16;
         let y = chunks[1].y + 1;
         f.set_cursor_position(Position::new(x, y));
     }
@@ -546,7 +572,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
 /// Renders the Detail View for the selected work item.
 fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
     let filtered_items = app.get_filtered_items();
-    let selected_index = app.list_state.selected().unwrap_or(0);
+    let selected_index = app.list_view_state.list_state.selected().unwrap_or(0);
     let item = filtered_items.get(selected_index).expect(
         "Logic Error: Detail view opened but item selection is invalid for the filtered list.",
     );
@@ -784,22 +810,22 @@ fn run_app<B: ratatui::backend::Backend>(
                         _ => {}
                     },
                     _ => {
-                        if app.is_filtering {
+                        if app.list_view_state.is_filtering {
                             match key.code {
                                 KeyCode::Enter | KeyCode::Esc => {
-                                    app.is_filtering = false;
+                                    app.list_view_state.is_filtering = false;
                                     if key.code == KeyCode::Esc {
-                                        app.filter_query.clear();
+                                        app.list_view_state.filter_query.clear();
                                         app.clamp_selection();
                                     }
                                 }
                                 KeyCode::Backspace => {
-                                    app.filter_query.pop();
+                                    app.list_view_state.filter_query.pop();
                                     app.clamp_selection();
                                 }
                                 KeyCode::Char(c) => {
                                     if c != '/' {
-                                        app.filter_query.push(c);
+                                        app.list_view_state.filter_query.push(c);
                                         app.clamp_selection();
                                     }
                                 }
@@ -817,14 +843,14 @@ fn run_app<B: ratatui::backend::Backend>(
 
                                         if key_matches_sequence(c, last_key, &app.keys.jump_to_top)
                                         {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.jump_to_start();
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.jump_to_end,
                                         ) {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.jump_to_end();
                                         } else if key_matches_sequence(c, last_key, &app.keys.quit)
                                         {
@@ -834,27 +860,27 @@ fn run_app<B: ratatui::backend::Backend>(
                                             last_key,
                                             &app.keys.search,
                                         ) {
-                                            app.is_list_details_hover_visible = false;
-                                            app.is_filtering = true;
-                                            app.filter_query.clear();
+                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_filtering = true;
+                                            app.list_view_state.filter_query.clear();
                                             app.clamp_selection();
                                         } else if key_matches_sequence(c, last_key, &app.keys.next)
                                         {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.navigate_list(1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.previous,
                                         ) {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.navigate_list(-1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.next_board,
                                         ) {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.next_board();
                                             return Ok(());
                                         } else if key_matches_sequence(
@@ -862,12 +888,12 @@ fn run_app<B: ratatui::backend::Backend>(
                                             last_key,
                                             &app.keys.previous_board,
                                         ) {
-                                            app.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible = false;
                                             app.previous_board();
                                             return Ok(());
                                         } else if key_matches_sequence(c, last_key, &app.keys.hover)
                                         {
-                                            app.is_list_details_hover_visible = true;
+                                            app.list_view_state.is_list_details_hover_visible = true;
                                         } else if key_matches_sequence(c, last_key, &app.keys.open)
                                         {
                                             app.open_item();
@@ -900,27 +926,27 @@ fn run_app<B: ratatui::backend::Backend>(
                                     } else {
                                         match key.code {
                                             KeyCode::Enter => {
-                                                app.is_list_details_hover_visible = false;
-                                                if app.list_state.selected().is_some() {
+                                                app.list_view_state.is_list_details_hover_visible = false;
+                                                if app.list_view_state.list_state.selected().is_some() {
                                                     app.view = AppView::Detail;
                                                 }
                                             }
                                             KeyCode::Esc => {
-                                                if app.assigned_to_me_filter_on {
+                                                if app.list_view_state.assigned_to_me_filter_on {
                                                     app.toggle_assigned_to_me_filter()
                                                 }
-                                                app.is_list_details_hover_visible = false;
-                                                if !app.filter_query.is_empty() {
-                                                    app.filter_query.clear();
+                                                app.list_view_state.is_list_details_hover_visible = false;
+                                                if !app.list_view_state.filter_query.is_empty() {
+                                                    app.list_view_state.filter_query.clear();
                                                     app.clamp_selection();
                                                 }
                                             }
                                             KeyCode::Up => {
-                                                app.is_list_details_hover_visible = false;
+                                                app.list_view_state.is_list_details_hover_visible = false;
                                                 app.navigate_list(-1);
                                             }
                                             KeyCode::Down => {
-                                                app.is_list_details_hover_visible = false;
+                                                app.list_view_state.is_list_details_hover_visible = false;
                                                 app.navigate_list(1);
                                             }
                                             _ => {}
