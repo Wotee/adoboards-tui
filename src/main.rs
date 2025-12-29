@@ -66,6 +66,7 @@ pub struct KeysConfig {
     jump_to_end: String,
     refresh: String,
     edit_config: String,
+    edit_item: String,
 }
 
 impl Default for KeysConfig {
@@ -84,6 +85,7 @@ impl Default for KeysConfig {
             jump_to_end: "G".to_string(),
             refresh: "r".to_string(),
             edit_config: "c".to_string(),
+            edit_item: "e".to_string(),
         }
     }
 }
@@ -1113,7 +1115,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                         if key_matches_sequence(c, last_key, &app.keys.open) {
                                             app.open_item()
                                         }
-                                        if c == 'e' {
+                                        if key_matches_sequence(c, last_key, &app.keys.edit_item) {
                                             if let Some(item) = app.get_selected_item() {
                                                 app.detail_view_state.edit_state =
                                                     Some(DetailEditState::new_from_item(item));

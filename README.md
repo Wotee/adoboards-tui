@@ -5,6 +5,7 @@ TODO: Add GIF with some dummy data.
 
 ## Features
 * Browse work items
+* Edit work items
 * Filter work items by id / title
 * Filter work items "Assigned to me"
 * Refresh backlog
@@ -90,6 +91,7 @@ Hotkeys are configurable. The default keys are:
 |------|-----|--------|
 | quit | `q` | Close item |
 | open | `o` | Open item in browser |
+| edit | `e` | Edit item |
 
 ---
 
