@@ -2,6 +2,7 @@ use anyhow::Result;
 use azure_devops_rust_api::Credential;
 use azure_devops_rust_api::wit::ClientBuilder as WitClientBuilder;
 use azure_devops_rust_api::wit::models::WorkItem as ADOWorkItem;
+use azure_devops_rust_api::wit::models::{json_patch_operation::Op, JsonPatchOperation};
 use azure_devops_rust_api::work::ClientBuilder as WorkClientBuilder;
 use azure_identity::AzureCliCredential;
 use crossterm::{
@@ -284,8 +285,49 @@ impl Default for ListViewState {
     }
 }
 
-#[derive(Default)]
-struct DetailViewState {}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetailField {
+    Title,
+    Description,
+    AcceptanceCriteria,
+}
+
+#[derive(Clone)]
+struct DetailEditState {
+    is_editing: bool,
+    active_field: DetailField,
+    title: String,
+    description: String,
+    acceptance_criteria: String,
+}
+
+impl DetailEditState {
+    fn new_from_item(item: &WorkItem) -> Self {
+        Self {
+            is_editing: false,
+            active_field: DetailField::Title,
+            title: item.title.clone(),
+            description: item.description.clone(),
+            acceptance_criteria: item.acceptance_criteria.clone(),
+        }
+    }
+}
+
+struct DetailViewState {
+    edit_state: Option<DetailEditState>,
+}
+
+impl DetailViewState {
+    fn new() -> Self {
+        Self { edit_state: None }
+    }
+}
+
+impl Default for DetailViewState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 struct App {
     view: AppView,
@@ -444,6 +486,43 @@ impl App {
     }
 }
 
+async fn update_work_item_in_ado(
+    board: &BoardConfig,
+    item: &WorkItem,
+    state: &DetailEditState,
+) -> Result<(), anyhow::Error> {
+    let credential = get_credential()?;
+    let wit_client = WitClientBuilder::new(credential).build();
+
+    let operations = vec![
+        JsonPatchOperation {
+            from: None,
+            op: Some(Op::Replace),
+            path: Some("/fields/System.Title".to_string()),
+            value: Some(serde_json::json!(state.title)),
+        },
+        JsonPatchOperation {
+            from: None,
+            op: Some(Op::Replace),
+            path: Some("/fields/System.Description".to_string()),
+            value: Some(serde_json::json!(state.description)),
+        },
+        JsonPatchOperation {
+            from: None,
+            op: Some(Op::Replace),
+            path: Some("/fields/Microsoft.VSTS.Common.AcceptanceCriteria".to_string()),
+            value: Some(serde_json::json!(state.acceptance_criteria)),
+        },
+    ];
+
+    wit_client
+        .work_items_client()
+        .update(&board.organization, operations, item.id as i32, &board.project)
+        .await
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
+}
+
 // --- TUI Drawing Functions ---
 fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<Rect> {
     let selected_index = app.list_view_state.list_state.selected()?;
@@ -577,6 +656,9 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         "Logic Error: Detail view opened but item selection is invalid for the filtered list.",
     );
 
+    let edit_state = app.detail_view_state.edit_state.as_ref();
+    let is_editing = edit_state.map(|s| s.is_editing).unwrap_or(false);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -589,26 +671,74 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         )
         .split(f.area());
 
-    let title_text = format!("{}: {}", item.id, item.title);
+    let (title_value, desc_value, ac_value, active_field) = if let Some(state) = edit_state {
+        (
+            state.title.clone(),
+            state.description.clone(),
+            state.acceptance_criteria.clone(),
+            state.active_field,
+        )
+    } else {
+        (
+            item.title.clone(),
+            item.description.clone(),
+            item.acceptance_criteria.clone(),
+            DetailField::Title,
+        )
+    };
+
+    let title_text = format!("{}: {}", item.id, title_value);
     let title_block = Block::default()
         .title(item.work_item_type.to_string())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightBlue));
+        .border_style(Style::default().fg(Color::LightBlue))
+        .border_type(if is_editing && active_field == DetailField::Title {
+            ratatui::widgets::BorderType::Thick
+        } else {
+            ratatui::widgets::BorderType::Plain
+        })
+        .border_style(Style::default().fg(if is_editing && active_field == DetailField::Title {
+            Color::Cyan
+        } else {
+            Color::LightBlue
+        }));
     let title_paragraph = Paragraph::new(title_text)
         .style(Style::default().add_modifier(Modifier::BOLD))
         .block(title_block);
     f.render_widget(title_paragraph, chunks[0]);
 
-    let desc_block = Block::default().title("Description").borders(Borders::ALL);
-    let desc_paragraph = Paragraph::new(item.description.clone())
+    let desc_block = Block::default()
+        .title("Description")
+        .borders(Borders::ALL)
+        .border_type(if is_editing && active_field == DetailField::Description {
+            ratatui::widgets::BorderType::Thick
+        } else {
+            ratatui::widgets::BorderType::Plain
+        })
+        .border_style(Style::default().fg(if is_editing && active_field == DetailField::Description {
+            Color::Cyan
+        } else {
+            Color::LightBlue
+        }));
+    let desc_paragraph = Paragraph::new(desc_value.clone())
         .wrap(Wrap { trim: false })
         .block(desc_block);
     f.render_widget(desc_paragraph, chunks[1]);
 
     let ac_block = Block::default()
         .title("Acceptance Criteria")
-        .borders(Borders::ALL);
-    let ac_paragraph = Paragraph::new(item.acceptance_criteria.clone())
+        .borders(Borders::ALL)
+        .border_type(if is_editing && active_field == DetailField::AcceptanceCriteria {
+            ratatui::widgets::BorderType::Thick
+        } else {
+            ratatui::widgets::BorderType::Plain
+        })
+        .border_style(Style::default().fg(if is_editing && active_field == DetailField::AcceptanceCriteria {
+            Color::Cyan
+        } else {
+            Color::LightBlue
+        }));
+    let ac_paragraph = Paragraph::new(ac_value.clone())
         .wrap(Wrap { trim: false })
         .block(ac_block);
     f.render_widget(ac_paragraph, chunks[2]);
@@ -829,7 +959,7 @@ fn run_app<B: ratatui::backend::Backend>(
                                         app.clamp_selection();
                                     }
                                 }
-                                _ => {}
+                                _ => {                                }
                             }
                         } else {
                             let current_char = match key.code {
@@ -929,6 +1059,10 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 app.list_view_state.is_list_details_hover_visible = false;
                                                 if app.list_view_state.list_state.selected().is_some() {
                                                     app.view = AppView::Detail;
+                                                    if let Some(item) = app.get_selected_item() {
+                                                        app.detail_view_state.edit_state =
+                                                            Some(DetailEditState::new_from_item(item));
+                                                    }
                                                 }
                                             }
                                             KeyCode::Esc => {
@@ -956,6 +1090,21 @@ fn run_app<B: ratatui::backend::Backend>(
                                 }
                                 AppView::Detail => {
                                     if let Some(c) = current_char {
+                                        // While editing, treat any character input as text for the active field.
+                                        if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                            if state.is_editing {
+                                                match state.active_field {
+                                                    DetailField::Title => state.title.push(c),
+                                                    DetailField::Description => state.description.push(c),
+                                                    DetailField::AcceptanceCriteria => {
+                                                        state.acceptance_criteria.push(c)
+                                                    }
+                                                }
+                                                app.last_key_press = None;
+                                                continue;
+                                            }
+                                        }
+
                                         let last_key = app.last_key_press;
 
                                         if key_matches_sequence(c, last_key, &app.keys.quit) {
@@ -964,9 +1113,133 @@ fn run_app<B: ratatui::backend::Backend>(
                                         if key_matches_sequence(c, last_key, &app.keys.open) {
                                             app.open_item()
                                         }
+                                        if c == 'e' {
+                                            if let Some(item) = app.get_selected_item() {
+                                                app.detail_view_state.edit_state =
+                                                    Some(DetailEditState::new_from_item(item));
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    state.is_editing = true;
+                                                }
+                                            }
+                                        }
+                                        app.last_key_press = Some(key.code);
                                     } else {
                                         match key.code {
-                                            KeyCode::Esc => app.view = AppView::List,
+                                            KeyCode::Esc => {
+                                                let selected_item = app.get_selected_item().cloned();
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        if let Some(item) = selected_item {
+                                                            *state = DetailEditState::new_from_item(&item);
+                                                        }
+                                                        state.is_editing = false;
+                                                    } else {
+                                                        app.view = AppView::List;
+                                                    }
+                                                } else {
+                                                    app.view = AppView::List;
+                                                }
+                                            }
+                                            KeyCode::Tab => {
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        state.active_field = match state.active_field {
+                                                            DetailField::Title => DetailField::Description,
+                                                            DetailField::Description => DetailField::AcceptanceCriteria,
+                                                            DetailField::AcceptanceCriteria => DetailField::Title,
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::BackTab => {
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        state.active_field = match state.active_field {
+                                                            DetailField::Title => DetailField::AcceptanceCriteria,
+                                                            DetailField::Description => DetailField::Title,
+                                                            DetailField::AcceptanceCriteria => DetailField::Description,
+                                                        };
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Enter => {
+                                                let selected_item = app.get_selected_item().cloned();
+                                                let board = app.current_board().clone();
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        if let Some(item) = selected_item {
+                                                            let local_state = state.clone();
+                                                            let item_for_spawn = item.clone();
+                                                            tokio::spawn(async move {
+                                                                if let Err(err) = update_work_item_in_ado(
+                                                                    &board,
+                                                                    &item_for_spawn,
+                                                                    &local_state,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    eprintln!("Failed to update item: {:?}", err);
+                                                                }
+                                                            });
+                                                            if let Some(current_item) = app
+                                                                .items
+                                                                .iter_mut()
+                                                                .find(|i| i.id == item.id)
+                                                            {
+                                                                current_item.title = state.title.clone();
+                                                                current_item.description =
+                                                                    state.description.clone();
+                                                                current_item.acceptance_criteria =
+                                                                    state.acceptance_criteria.clone();
+                                                            }
+                                                        }
+                                                        state.is_editing = false;
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Char(c) => {
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        match state.active_field {
+                                                            DetailField::Title => state.title.push(c),
+                                                            DetailField::Description => state.description.push(c),
+                                                            DetailField::AcceptanceCriteria => {
+                                                                state.acceptance_criteria.push(c)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Delete => {
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        match state.active_field {
+                                                            DetailField::Title => state.title.clear(),
+                                                            DetailField::Description => state.description.clear(),
+                                                            DetailField::AcceptanceCriteria => {
+                                                                state.acceptance_criteria.clear()
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Backspace => {
+                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                    if state.is_editing {
+                                                        match state.active_field {
+                                                            DetailField::Title => {
+                                                                state.title.pop();
+                                                            }
+                                                            DetailField::Description => {
+                                                                state.description.pop();
+                                                            }
+                                                            DetailField::AcceptanceCriteria => {
+                                                                state.acceptance_criteria.pop();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -979,3 +1252,4 @@ fn run_app<B: ratatui::backend::Backend>(
         }
     }
 }
+
