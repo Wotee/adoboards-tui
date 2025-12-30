@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, BoardConfig, KeysConfig};
+use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
 use crate::models::{DetailField, WorkItem};
 use crate::services::update_work_item_in_ado;
 use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
@@ -77,14 +77,29 @@ pub struct DetailViewState {
     pub edit_state: Option<DetailEditState>,
 }
 
+#[derive(Clone)]
+pub enum SourceKind {
+    Backlog,
+    Iteration(IterationConfig),
+}
+
+#[derive(Clone)]
+pub struct SourceEntry {
+    pub title: String,
+    pub team: String,
+    pub organization: String,
+    pub project: String,
+    pub kind: SourceKind,
+}
+
 pub struct App {
     pub view: AppView,
     pub items: Vec<WorkItem>,
     pub list_view_state: ListViewState,
     pub detail_view_state: DetailViewState,
     pub loading_state: LoadingState,
-    pub all_boards: Vec<BoardConfig>,
-    pub current_board_index: usize,
+    pub sources: Vec<SourceEntry>,
+    pub current_source_index: usize,
     pub me: String,
     pub keys: KeysConfig,
     pub last_key_press: Option<KeyCode>,
@@ -93,25 +108,48 @@ pub struct App {
 impl App {
     pub fn new(config: AppConfig) -> App {
         let mut list_state = ListState::default();
-        if !config.boards.is_empty() {
+        let mut sources: Vec<SourceEntry> = Vec::new();
+
+        for board in &config.boards {
+            sources.push(SourceEntry {
+                title: format!("{} Backlog", board.team),
+                team: board.team.clone(),
+                organization: board.organization.clone(),
+                project: board.project.clone(),
+                kind: SourceKind::Backlog,
+            });
+        }
+
+        for iteration in &config.iterations {
+            sources.push(SourceEntry {
+                title: format!("{} Iteration: {}", iteration.team, iteration.iteration),
+                team: iteration.team.clone(),
+                organization: iteration.organization.clone(),
+                project: iteration.project.clone(),
+                kind: SourceKind::Iteration(iteration.clone()),
+            });
+        }
+
+        if !sources.is_empty() {
             list_state.select(Some(0));
         }
+
         App {
             view: AppView::List,
             items: Vec::new(),
             list_view_state: ListViewState::new(list_state),
             detail_view_state: DetailViewState::default(),
             loading_state: LoadingState::Loading,
-            all_boards: config.boards,
-            current_board_index: 0,
+            sources,
+            current_source_index: 0,
             me: config.common.me,
             keys: config.keys,
             last_key_press: None,
         }
     }
 
-    pub fn current_board(&self) -> &BoardConfig {
-        &self.all_boards[self.current_board_index]
+    pub fn current_source(&self) -> &SourceEntry {
+        &self.sources[self.current_source_index]
     }
 
     pub fn load_data(&mut self, items: Vec<WorkItem>) {
@@ -205,11 +243,11 @@ impl App {
     }
 
     pub fn open_item(&mut self) {
-        let board = self.all_boards.get(self.current_board_index).unwrap();
         let item = self.get_selected_item().unwrap();
+        let source = self.current_source();
         let url = format!(
             "https://dev.azure.com/{}/{}/_workitems/edit/{}",
-            board.organization, board.project, item.id,
+            source.organization, source.project, item.id,
         );
 
         if let Err(e) = open::that(url) {
@@ -217,19 +255,19 @@ impl App {
         }
     }
 
-    pub fn next_board(&mut self) {
-        if self.all_boards.len() > 1 {
-            self.current_board_index = (self.current_board_index + 1) % self.all_boards.len();
+    pub fn next_source(&mut self) {
+        if self.sources.len() > 1 {
+            self.current_source_index = (self.current_source_index + 1) % self.sources.len();
             self.loading_state = LoadingState::Loading;
         }
     }
 
-    pub fn previous_board(&mut self) {
-        if self.all_boards.len() > 1 {
-            if self.current_board_index == 0 {
-                self.current_board_index = self.all_boards.len() - 1;
+    pub fn previous_source(&mut self) {
+        if self.sources.len() > 1 {
+            if self.current_source_index == 0 {
+                self.current_source_index = self.sources.len() - 1;
             } else {
-                self.current_board_index -= 1;
+                self.current_source_index -= 1;
             }
             self.loading_state = LoadingState::Loading;
         }
@@ -238,6 +276,10 @@ impl App {
     pub fn get_selected_item(&self) -> Option<&WorkItem> {
         let selected_index = self.list_view_state.list_state.selected()?;
         self.get_filtered_items().get(selected_index).copied()
+    }
+
+    pub fn current_title(&self) -> String {
+        self.current_source().title.clone()
     }
 
     pub fn clamp_selection(&mut self) {
@@ -468,7 +510,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                         ) {
                                             app.list_view_state.is_list_details_hover_visible =
                                                 false;
-                                            app.next_board();
+                                            app.next_source();
                                             return Ok(());
                                         } else if key_matches_sequence(
                                             c,
@@ -477,7 +519,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                         ) {
                                             app.list_view_state.is_list_details_hover_visible =
                                                 false;
-                                            app.previous_board();
+                                            app.previous_source();
                                             return Ok(());
                                         } else if key_matches_sequence(c, last_key, &app.keys.hover)
                                         {
@@ -671,7 +713,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                             KeyCode::Enter => {
                                                 let selected_item =
                                                     app.get_selected_item().cloned();
-                                                let board = app.current_board().clone();
+                                                let source = app.current_source().clone();
                                                 if let Some(state) =
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
@@ -682,7 +724,12 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             tokio::spawn(async move {
                                                                 if let Err(err) =
                                                                     update_work_item_in_ado(
-                                                                        &board,
+                                                                        &BoardConfig {
+                                                                            organization: source
+                                                                                .organization,
+                                                                            project: source.project,
+                                                                            team: source.team,
+                                                                        },
                                                                         &item_for_spawn,
                                                                         &local_state,
                                                                     )

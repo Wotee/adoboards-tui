@@ -22,6 +22,25 @@ impl Default for BoardConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct IterationConfig {
+    pub organization: String,
+    pub project: String,
+    pub team: String,
+    pub iteration: String,
+}
+
+impl Default for IterationConfig {
+    fn default() -> Self {
+        IterationConfig {
+            organization: "<organization>".to_string(),
+            project: "<project>".to_string(),
+            team: "<team>".to_string(),
+            iteration: "<iteration path>".to_string(),
+        }
+    }
+}
+
 #[derive(Default, Clone, Debug, Deserialize, Serialize)]
 pub struct CommonConfig {
     pub me: String,
@@ -76,6 +95,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub boards: Vec<BoardConfig>,
     #[serde(default)]
+    pub iterations: Vec<IterationConfig>,
+    #[serde(default)]
     pub keys: KeysConfig,
 }
 
@@ -84,6 +105,7 @@ impl Default for AppConfig {
         AppConfig {
             common: CommonConfig { me: "".to_string() },
             boards: vec![BoardConfig::default()],
+            iterations: Vec::new(),
             keys: KeysConfig::default(),
         }
     }
@@ -121,20 +143,27 @@ pub fn load_config_or_prompt() -> (AppConfig, bool) {
         }
     };
 
-    let default_item = BoardConfig::default();
-    let config_ok = match cfg.boards.as_slice() {
-        [] => {
-            let _ = open_config();
-            eprintln!("Reopen {}", APPNAME);
-            false
-        }
-        [item] if item == &default_item => {
-            let _ = open_config();
-            eprintln!("Reopen {}", APPNAME);
-            false
-        }
+    let default_board = BoardConfig::default();
+    let default_iteration = IterationConfig::default();
+
+    let boards_ok = match cfg.boards.as_slice() {
+        [] => false,
+        [item] if item == &default_board => false,
         _ => true,
     };
+
+    let iterations_ok = match cfg.iterations.as_slice() {
+        [] => false,
+        [item] if item == &default_iteration => false,
+        _ => true,
+    };
+
+    let config_ok = boards_ok || iterations_ok;
+
+    if !config_ok {
+        let _ = open_config();
+        eprintln!("Reopen {}", APPNAME);
+    }
 
     (cfg, config_ok)
 }

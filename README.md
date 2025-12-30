@@ -64,6 +64,18 @@ team = "<team>" // Usually "<project Team>"
 The values can be found from the URL:
 `https://dev.azure.com/<organization>/<project>`
 
+### Iterations
+Iterations are configured similarly, with an additional iteration path (as shown in Azure DevOps):
+```toml
+[[iterations]]
+organization = "<organization>"
+project = "<project>"
+team = "<team>"
+iteration = "<iteration path>" # e.g. "Fabrikam Fiber\Release 1\Sprint 1"
+```
+
+You can set both boards and iterations; adoboards will let you cycle through all configured entries.
+
 ### ⌨️ Hotkeys
 
 Hotkeys are configurable. The default keys are:
@@ -85,6 +97,7 @@ Hotkeys are configurable. The default keys are:
 | search | `/` | Open filter |
 | open | `o` | Open item in browser |
 | assigned_to_me_filter | `m` | Toggle "assigned to me" filter |
+| work_item_type_filter | `t` | Filter based on work item type |
 
 ### Item View
 | Name | Key | Action |
@@ -176,7 +189,6 @@ Future plans and ideas for `adoboards`:
 * Crashes if not authenticated
 ### List view
 * Cache backlogs when using multiple?
-* See iteration backlogs
 * Create work items
 ### Detail view
 * Refine WI description/AC so line breaks etc. are not broken

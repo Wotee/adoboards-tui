@@ -185,10 +185,11 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         format!(" | Types: {}", joined)
     };
 
+    let base_title = app.current_title();
     let board_title: String = if app.list_view_state.assigned_to_me_filter_on {
         format!(
-            "{} Backlog, Assigned to {}{}",
-            app.current_board().team,
+            "{}, Assigned to {}{}",
+            base_title,
             if app.me.is_empty() {
                 "<name not configured>".to_string()
             } else {
@@ -197,7 +198,7 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
             type_filter_label,
         )
     } else {
-        format!("{} Backlog {}", app.current_board().team, type_filter_label)
+        format!("{} {}", base_title, type_filter_label)
     };
 
     let list = List::new(list_items)

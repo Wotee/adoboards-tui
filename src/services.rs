@@ -23,17 +23,47 @@ fn get_credential() -> Result<Credential> {
     }
 }
 
+pub async fn resolve_iteration_id(
+    organization: &str,
+    project: &str,
+    team: &str,
+    iteration_path: &str,
+) -> Result<String> {
+    let credential = get_credential()?;
+    let work_client = WorkClientBuilder::new(credential).build();
+
+    // Fetch all iterations for the team and match by path or name
+    let iterations = work_client
+        .iterations_client()
+        .list(organization, project, team)
+        .await?
+        .value;
+
+    let matched = iterations
+        .into_iter()
+        .find(|i| match (&i.path, &i.name) {
+            (Some(path), _) if path == iteration_path => true,
+            (_, Some(name)) if name == iteration_path => true,
+            _ => false,
+        })
+        .and_then(|i| i.id);
+
+    matched.ok_or_else(|| {
+        anyhow::anyhow!("Iteration not found for team '{team}' and path or name '{iteration_path}'")
+    })
+}
+
 pub async fn get_iteration_ids(
     organization: &str,
     project: &str,
     team: &str,
-    iteration: &str,
+    iteration_id: &str,
 ) -> Result<Vec<i32>> {
     let credential = get_credential()?;
     let work_client = WorkClientBuilder::new(credential).build();
     let iteration_work_items = work_client
         .iterations_client()
-        .get_iteration_work_items(organization, project, iteration, team)
+        .get_iteration_work_items(organization, project, iteration_id, team)
         .await?;
     let work_item_ids: Vec<i32> = iteration_work_items
         .work_item_relations

@@ -15,7 +15,7 @@ mod ui;
 
 use crate::app::{App, LoadingState, run_app};
 use crate::config::load_config_or_prompt;
-use crate::services::{get_backlog_ids, get_items};
+use crate::services::{get_backlog_ids, get_items, get_iteration_ids, resolve_iteration_id};
 use crate::ui::draw_status_screen;
 
 #[tokio::main]
@@ -33,15 +33,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config_ok {
         while !matches!(app.loading_state, LoadingState::Error(_)) {
             if matches!(app.loading_state, LoadingState::Loading) {
-                let board = app.current_board();
-                let board_title = format!("{} Backlog", board.team);
-                terminal.draw(|f| draw_status_screen(f, &format!("Loading {}...", board_title)))?;
+                let source = app.current_source().clone();
+                let source_title = source.title.clone();
+                terminal
+                    .draw(|f| draw_status_screen(f, &format!("Loading {}...", source_title)))?;
 
                 let fetch_result = async {
-                    let ids =
-                        get_backlog_ids(&board.organization, &board.project, &board.team).await?;
-                    let items = get_items(&board.organization, &board.project, ids).await?;
-                    Ok::<_, anyhow::Error>(items)
+                    match source.kind {
+                        crate::app::SourceKind::Backlog => {
+                            let ids = get_backlog_ids(
+                                &source.organization,
+                                &source.project,
+                                &source.team,
+                            )
+                            .await?;
+                            let items =
+                                get_items(&source.organization, &source.project, ids).await?;
+                            Ok::<_, anyhow::Error>(items)
+                        }
+                        crate::app::SourceKind::Iteration(iteration) => {
+                            let iteration_id = resolve_iteration_id(
+                                &iteration.organization,
+                                &iteration.project,
+                                &iteration.team,
+                                &iteration.iteration,
+                            )
+                            .await?;
+                            let ids = get_iteration_ids(
+                                &iteration.organization,
+                                &iteration.project,
+                                &iteration.team,
+                                &iteration_id,
+                            )
+                            .await?;
+                            let items =
+                                get_items(&iteration.organization, &iteration.project, ids).await?;
+                            Ok::<_, anyhow::Error>(items)
+                        }
+                    }
                 }
                 .await;
 
