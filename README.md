@@ -178,10 +178,8 @@ Future plans and ideas for `adoboards`:
 * Cache backlogs when using multiple?
 * See iteration backlogs
 * Create work items
-* Filter on work item type
 ### Detail view
 * Refine WI description/AC so line breaks etc. are not broken
-* Edit fields
 * See parent/child items 
 * Go to parent/child items 
 
