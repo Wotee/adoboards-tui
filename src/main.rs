@@ -2,7 +2,7 @@ use anyhow::Result;
 use azure_devops_rust_api::Credential;
 use azure_devops_rust_api::wit::ClientBuilder as WitClientBuilder;
 use azure_devops_rust_api::wit::models::WorkItem as ADOWorkItem;
-use azure_devops_rust_api::wit::models::{json_patch_operation::Op, JsonPatchOperation};
+use azure_devops_rust_api::wit::models::{JsonPatchOperation, json_patch_operation::Op};
 use azure_devops_rust_api::work::ClientBuilder as WorkClientBuilder;
 use azure_identity::AzureCliCredential;
 use crossterm::{
@@ -22,7 +22,7 @@ use ratatui::{
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{error::Error, io, process::Command, time::Duration};
+use std::{collections::BTreeSet, error::Error, io, process::Command, time::Duration};
 
 const APPNAME: &str = "adoboards";
 
@@ -62,6 +62,7 @@ pub struct KeysConfig {
     previous_board: String,
     search: String,
     assigned_to_me_filter: String,
+    work_item_type_filter: String,
     jump_to_top: String,
     jump_to_end: String,
     refresh: String,
@@ -81,6 +82,7 @@ impl Default for KeysConfig {
             previous_board: "<".to_string(),
             search: "/".to_string(),
             assigned_to_me_filter: "m".to_string(),
+            work_item_type_filter: "t".to_string(),
             jump_to_top: "gg".to_string(),
             jump_to_end: "G".to_string(),
             refresh: "r".to_string(),
@@ -267,6 +269,10 @@ struct ListViewState {
     is_filtering: bool,
     is_list_details_hover_visible: bool,
     assigned_to_me_filter_on: bool,
+    is_type_filter_open: bool,
+    active_type_filters: BTreeSet<String>,
+    available_types: BTreeSet<String>,
+    type_filter_selection: Option<usize>,
 }
 
 impl ListViewState {
@@ -277,6 +283,10 @@ impl ListViewState {
             is_filtering: false,
             is_list_details_hover_visible: false,
             assigned_to_me_filter_on: false,
+            is_type_filter_open: false,
+            active_type_filters: BTreeSet::new(),
+            available_types: BTreeSet::new(),
+            type_filter_selection: None,
         }
     }
 }
@@ -378,6 +388,70 @@ impl App {
         }
     }
 
+    fn toggle_type_filter_menu(&mut self) {
+        self.list_view_state.is_type_filter_open = !self.list_view_state.is_type_filter_open;
+        if self.list_view_state.is_type_filter_open {
+            let available_len = self.list_view_state.available_types.len();
+            self.list_view_state.type_filter_selection =
+                if available_len > 0 { Some(0) } else { None };
+            self.list_view_state.is_list_details_hover_visible = false;
+        } else {
+            self.list_view_state.type_filter_selection = None;
+        }
+    }
+
+    fn toggle_type_selection(&mut self) {
+        if !self.list_view_state.is_type_filter_open {
+            return;
+        }
+
+        if let Some(selected_index) = self.list_view_state.type_filter_selection {
+            if let Some(selected_type) = self
+                .list_view_state
+                .available_types
+                .iter()
+                .nth(selected_index)
+                .cloned()
+            {
+                if self
+                    .list_view_state
+                    .active_type_filters
+                    .contains(&selected_type)
+                {
+                    self.list_view_state
+                        .active_type_filters
+                        .remove(&selected_type);
+                } else {
+                    self.list_view_state
+                        .active_type_filters
+                        .insert(selected_type);
+                }
+                self.clamp_selection();
+            }
+        }
+    }
+
+    fn clear_type_filters(&mut self) {
+        self.list_view_state.active_type_filters.clear();
+        self.clamp_selection();
+    }
+
+    fn move_type_selection(&mut self, direction: isize) {
+        if !self.list_view_state.is_type_filter_open {
+            return;
+        }
+
+        let len = self.list_view_state.available_types.len();
+        if len == 0 {
+            self.list_view_state.type_filter_selection = None;
+            return;
+        }
+
+        let current = self.list_view_state.type_filter_selection.unwrap_or(0) as isize;
+        let next = (current + direction).clamp(0, len as isize - 1);
+        self.list_view_state.type_filter_selection = Some(next as usize);
+    }
+
     fn current_board(&self) -> &BoardConfig {
         &self.all_boards[self.current_board_index]
     }
@@ -428,9 +502,7 @@ impl App {
 
         if let Some(current_index) = self.list_view_state.list_state.selected() {
             if current_index >= item_count {
-                self.list_view_state
-                    .list_state
-                    .select(Some(item_count - 1));
+                self.list_view_state.list_state.select(Some(item_count - 1));
             }
         } else {
             self.list_view_state.list_state.select(Some(0));
@@ -447,6 +519,17 @@ impl App {
                         return false;
                     }
                 }
+
+                // Apply work item type filter if any are active
+                if !self.list_view_state.active_type_filters.is_empty()
+                    && !self
+                        .list_view_state
+                        .active_type_filters
+                        .contains(&item.work_item_type)
+                {
+                    return false;
+                }
+
                 // Apply the text search filter
                 if !self.list_view_state.filter_query.is_empty() {
                     let query = self.list_view_state.filter_query.to_lowercase();
@@ -460,7 +543,8 @@ impl App {
     }
 
     fn toggle_assigned_to_me_filter(&mut self) {
-        self.list_view_state.assigned_to_me_filter_on = !self.list_view_state.assigned_to_me_filter_on;
+        self.list_view_state.assigned_to_me_filter_on =
+            !self.list_view_state.assigned_to_me_filter_on;
         self.list_view_state.is_list_details_hover_visible = false;
         self.list_view_state
             .list_state
@@ -472,8 +556,11 @@ impl App {
         if !items.is_empty() {
             list_state.select(Some(0));
         }
+        self.list_view_state.available_types =
+            items.iter().map(|i| i.work_item_type.clone()).collect();
         self.items = items;
         self.list_view_state.list_state = list_state;
+        self.list_view_state.type_filter_selection = None;
         self.loading_state = LoadingState::Loaded;
     }
 
@@ -519,7 +606,12 @@ async fn update_work_item_in_ado(
 
     wit_client
         .work_items_client()
-        .update(&board.organization, operations, item.id as i32, &board.project)
+        .update(
+            &board.organization,
+            operations,
+            item.id as i32,
+            &board.project,
+        )
         .await
         .map(|_| ())
         .map_err(anyhow::Error::from)
@@ -558,6 +650,46 @@ fn calculate_popup_rect(frame_area: Rect, app: &App, list_area: Rect) -> Option<
     })
 }
 
+fn calculate_type_filter_rect(
+    frame_area: Rect,
+    app: &App,
+    list_area: Rect,
+    content_lines: u16,
+) -> Option<Rect> {
+    let selected_index = app.list_view_state.list_state.selected()?;
+    let offset = app.list_view_state.list_state.offset();
+    let relative_y = (selected_index.saturating_sub(offset)) as u16;
+
+    let desired_height = content_lines.saturating_add(2); // borders
+    let popup_height = desired_height
+        .max(3)
+        .min(frame_area.height.saturating_sub(1));
+    let popup_width = 45;
+
+    let selected_y_on_screen = list_area.y + 1 + relative_y;
+
+    let mut x = list_area.x + 20;
+    let mut y = selected_y_on_screen + 1;
+
+    if y + popup_height > frame_area.height {
+        y = selected_y_on_screen.saturating_sub(popup_height);
+    }
+
+    y = y.max(frame_area.y);
+
+    if x + popup_width > frame_area.width {
+        x = frame_area.width.saturating_sub(popup_width + 1);
+    }
+    x = x.max(frame_area.x + 1);
+
+    Some(Rect {
+        x,
+        y,
+        width: popup_width,
+        height: popup_height,
+    })
+}
+
 fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     if app.list_view_state.is_list_details_hover_visible {
         if let Some(item) = app.get_selected_item() {
@@ -578,6 +710,47 @@ fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     }
 }
 
+fn draw_type_filter_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
+    if !app.list_view_state.is_type_filter_open {
+        return;
+    }
+
+    let mut content_lines: Vec<Line> = Vec::new();
+
+    if app.list_view_state.available_types.is_empty() {
+        content_lines.push(Line::from("No types"));
+    } else {
+        for (idx, t) in app.list_view_state.available_types.iter().enumerate() {
+            let is_selected = Some(idx) == app.list_view_state.type_filter_selection;
+            let is_active = app.list_view_state.active_type_filters.contains(t);
+            let indicator = if is_active { "[x]" } else { "[ ]" };
+            let line = if is_selected {
+                Line::from(Span::styled(
+                    format!("{} {}", indicator, t),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Line::from(format!("{} {}", indicator, t))
+            };
+            content_lines.push(line);
+        }
+    }
+
+    let content_height = content_lines.len() as u16;
+
+    if let Some(popup_rect) = calculate_type_filter_rect(f.area(), app, list_area, content_height) {
+        f.render_widget(Clear, popup_rect);
+
+        let popup_block = Block::default()
+            .borders(Borders::ALL)
+            .title("Type Filter")
+            .border_style(Style::default().fg(Color::LightBlue));
+        f.render_widget(Paragraph::new(content_lines).block(popup_block), popup_rect);
+    }
+}
+
 fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     let constraints = if app.list_view_state.is_filtering {
         [Constraint::Min(0), Constraint::Length(3)]
@@ -592,26 +765,49 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
 
     let items_to_display = app.get_filtered_items();
 
-    let list_items: Vec<ListItem> = items_to_display
-        .iter()
-        .map(|item| {
-            let content = Line::from(format!("{}: {}", item.id, item.title));
-            ListItem::new(content).style(Style::default().fg(Color::White))
-        })
-        .collect();
+    let list_items: Vec<ListItem> = if items_to_display.is_empty() {
+        vec![
+            ListItem::new(Line::from(
+                "No items match filters — press c in type filter to clear",
+            ))
+            .style(Style::default().fg(Color::DarkGray)),
+        ]
+    } else {
+        items_to_display
+            .iter()
+            .map(|item| {
+                let content = Line::from(format!("{}: {}", item.id, item.title));
+                ListItem::new(content).style(Style::default().fg(Color::White))
+            })
+            .collect()
+    };
+
+    let type_filter_label = if app.list_view_state.active_type_filters.is_empty() {
+        "".to_string()
+    } else {
+        let joined = app
+            .list_view_state
+            .active_type_filters
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" | Types: {}", joined)
+    };
 
     let board_title: String = if app.list_view_state.assigned_to_me_filter_on {
         format!(
-            "{} Backlog, Assigned to {}",
+            "{} Backlog, Assigned to {}{}",
             app.current_board().team,
             if app.me.is_empty() {
                 "<name not configured>".to_string()
             } else {
                 app.me.to_string()
             },
+            type_filter_label,
         )
     } else {
-        format!("{} Backlog", app.current_board().team)
+        format!("{} Backlog {}", app.current_board().team, type_filter_label)
     };
 
     let list = List::new(list_items)
@@ -632,6 +828,7 @@ fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     f.render_stateful_widget(list, chunks[0], &mut app.list_view_state.list_state);
 
     draw_hover_popup(f, app, list_area);
+    draw_type_filter_popup(f, app, list_area);
 
     if app.list_view_state.is_filtering {
         let filter_block = Block::default()
@@ -699,11 +896,13 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         } else {
             ratatui::widgets::BorderType::Plain
         })
-        .border_style(Style::default().fg(if is_editing && active_field == DetailField::Title {
-            Color::Cyan
-        } else {
-            Color::LightBlue
-        }));
+        .border_style(
+            Style::default().fg(if is_editing && active_field == DetailField::Title {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            }),
+        );
     let title_paragraph = Paragraph::new(title_text)
         .style(Style::default().add_modifier(Modifier::BOLD))
         .block(title_block);
@@ -717,11 +916,13 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         } else {
             ratatui::widgets::BorderType::Plain
         })
-        .border_style(Style::default().fg(if is_editing && active_field == DetailField::Description {
-            Color::Cyan
-        } else {
-            Color::LightBlue
-        }));
+        .border_style(Style::default().fg(
+            if is_editing && active_field == DetailField::Description {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            },
+        ));
     let desc_paragraph = Paragraph::new(desc_value.clone())
         .wrap(Wrap { trim: false })
         .block(desc_block);
@@ -730,16 +931,20 @@ fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
     let ac_block = Block::default()
         .title("Acceptance Criteria")
         .borders(Borders::ALL)
-        .border_type(if is_editing && active_field == DetailField::AcceptanceCriteria {
-            ratatui::widgets::BorderType::Thick
-        } else {
-            ratatui::widgets::BorderType::Plain
-        })
-        .border_style(Style::default().fg(if is_editing && active_field == DetailField::AcceptanceCriteria {
-            Color::Cyan
-        } else {
-            Color::LightBlue
-        }));
+        .border_type(
+            if is_editing && active_field == DetailField::AcceptanceCriteria {
+                ratatui::widgets::BorderType::Thick
+            } else {
+                ratatui::widgets::BorderType::Plain
+            },
+        )
+        .border_style(Style::default().fg(
+            if is_editing && active_field == DetailField::AcceptanceCriteria {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            },
+        ));
     let ac_paragraph = Paragraph::new(ac_value.clone())
         .wrap(Wrap { trim: false })
         .block(ac_block);
@@ -961,7 +1166,46 @@ fn run_app<B: ratatui::backend::Backend>(
                                         app.clamp_selection();
                                     }
                                 }
-                                _ => {                                }
+                                _ => {}
+                            }
+                        } else if app.list_view_state.is_type_filter_open {
+                            match key.code {
+                                KeyCode::Esc => {
+                                    app.list_view_state.is_type_filter_open = false;
+                                    app.list_view_state.type_filter_selection = None;
+                                }
+                                KeyCode::Char('c') => {
+                                    app.clear_type_filters();
+                                    app.list_view_state.is_type_filter_open = false;
+                                    app.list_view_state.type_filter_selection = None;
+                                }
+                                KeyCode::Enter | KeyCode::Char(' ') => {
+                                    app.toggle_type_selection();
+                                }
+                                KeyCode::Up => {
+                                    app.move_type_selection(-1);
+                                }
+                                KeyCode::Down => {
+                                    app.move_type_selection(1);
+                                }
+                                KeyCode::Char(c) => {
+                                    let last_key = app.last_key_press;
+                                    if key_matches_sequence(c, last_key, &app.keys.quit) {
+                                        app.list_view_state.is_type_filter_open = false;
+                                        app.list_view_state.type_filter_selection = None;
+                                        app.last_key_press = None;
+                                    } else if key_matches_sequence(c, last_key, &app.keys.next) {
+                                        app.move_type_selection(1);
+                                        app.last_key_press = Some(key.code);
+                                    } else if key_matches_sequence(c, last_key, &app.keys.previous)
+                                    {
+                                        app.move_type_selection(-1);
+                                        app.last_key_press = Some(key.code);
+                                    } else {
+                                        app.last_key_press = None;
+                                    }
+                                }
+                                _ => {}
                             }
                         } else {
                             let current_char = match key.code {
@@ -975,14 +1219,16 @@ fn run_app<B: ratatui::backend::Backend>(
 
                                         if key_matches_sequence(c, last_key, &app.keys.jump_to_top)
                                         {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.jump_to_start();
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.jump_to_end,
                                         ) {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.jump_to_end();
                                         } else if key_matches_sequence(c, last_key, &app.keys.quit)
                                         {
@@ -992,27 +1238,31 @@ fn run_app<B: ratatui::backend::Backend>(
                                             last_key,
                                             &app.keys.search,
                                         ) {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.list_view_state.is_filtering = true;
                                             app.list_view_state.filter_query.clear();
                                             app.clamp_selection();
                                         } else if key_matches_sequence(c, last_key, &app.keys.next)
                                         {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.navigate_list(1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.previous,
                                         ) {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.navigate_list(-1);
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
                                             &app.keys.next_board,
                                         ) {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.next_board();
                                             return Ok(());
                                         } else if key_matches_sequence(
@@ -1020,12 +1270,14 @@ fn run_app<B: ratatui::backend::Backend>(
                                             last_key,
                                             &app.keys.previous_board,
                                         ) {
-                                            app.list_view_state.is_list_details_hover_visible = false;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
                                             app.previous_board();
                                             return Ok(());
                                         } else if key_matches_sequence(c, last_key, &app.keys.hover)
                                         {
-                                            app.list_view_state.is_list_details_hover_visible = true;
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                true;
                                         } else if key_matches_sequence(c, last_key, &app.keys.open)
                                         {
                                             app.open_item();
@@ -1035,6 +1287,12 @@ fn run_app<B: ratatui::backend::Backend>(
                                             &app.keys.assigned_to_me_filter,
                                         ) {
                                             app.toggle_assigned_to_me_filter()
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.work_item_type_filter,
+                                        ) {
+                                            app.toggle_type_filter_menu();
                                         } else if key_matches_sequence(
                                             c,
                                             last_key,
@@ -1058,12 +1316,19 @@ fn run_app<B: ratatui::backend::Backend>(
                                     } else {
                                         match key.code {
                                             KeyCode::Enter => {
-                                                app.list_view_state.is_list_details_hover_visible = false;
-                                                if app.list_view_state.list_state.selected().is_some() {
+                                                app.list_view_state.is_list_details_hover_visible =
+                                                    false;
+                                                if app
+                                                    .list_view_state
+                                                    .list_state
+                                                    .selected()
+                                                    .is_some()
+                                                {
                                                     app.view = AppView::Detail;
                                                     if let Some(item) = app.get_selected_item() {
-                                                        app.detail_view_state.edit_state =
-                                                            Some(DetailEditState::new_from_item(item));
+                                                        app.detail_view_state.edit_state = Some(
+                                                            DetailEditState::new_from_item(item),
+                                                        );
                                                     }
                                                 }
                                             }
@@ -1071,18 +1336,24 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 if app.list_view_state.assigned_to_me_filter_on {
                                                     app.toggle_assigned_to_me_filter()
                                                 }
-                                                app.list_view_state.is_list_details_hover_visible = false;
+                                                app.list_view_state.is_list_details_hover_visible =
+                                                    false;
                                                 if !app.list_view_state.filter_query.is_empty() {
                                                     app.list_view_state.filter_query.clear();
                                                     app.clamp_selection();
                                                 }
+                                                if app.list_view_state.is_type_filter_open {
+                                                    app.toggle_type_filter_menu();
+                                                }
                                             }
                                             KeyCode::Up => {
-                                                app.list_view_state.is_list_details_hover_visible = false;
+                                                app.list_view_state.is_list_details_hover_visible =
+                                                    false;
                                                 app.navigate_list(-1);
                                             }
                                             KeyCode::Down => {
-                                                app.list_view_state.is_list_details_hover_visible = false;
+                                                app.list_view_state.is_list_details_hover_visible =
+                                                    false;
                                                 app.navigate_list(1);
                                             }
                                             _ => {}
@@ -1093,11 +1364,15 @@ fn run_app<B: ratatui::backend::Backend>(
                                 AppView::Detail => {
                                     if let Some(c) = current_char {
                                         // While editing, treat any character input as text for the active field.
-                                        if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                        if let Some(state) =
+                                            app.detail_view_state.edit_state.as_mut()
+                                        {
                                             if state.is_editing {
                                                 match state.active_field {
                                                     DetailField::Title => state.title.push(c),
-                                                    DetailField::Description => state.description.push(c),
+                                                    DetailField::Description => {
+                                                        state.description.push(c)
+                                                    }
                                                     DetailField::AcceptanceCriteria => {
                                                         state.acceptance_criteria.push(c)
                                                     }
@@ -1119,7 +1394,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                             if let Some(item) = app.get_selected_item() {
                                                 app.detail_view_state.edit_state =
                                                     Some(DetailEditState::new_from_item(item));
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     state.is_editing = true;
                                                 }
                                             }
@@ -1128,11 +1405,16 @@ fn run_app<B: ratatui::backend::Backend>(
                                     } else {
                                         match key.code {
                                             KeyCode::Esc => {
-                                                let selected_item = app.get_selected_item().cloned();
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                let selected_item =
+                                                    app.get_selected_item().cloned();
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
                                                         if let Some(item) = selected_item {
-                                                            *state = DetailEditState::new_from_item(&item);
+                                                            *state = DetailEditState::new_from_item(
+                                                                &item,
+                                                            );
                                                         }
                                                         state.is_editing = false;
                                                     } else {
@@ -1143,44 +1425,69 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Tab => {
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
-                                                        state.active_field = match state.active_field {
-                                                            DetailField::Title => DetailField::Description,
-                                                            DetailField::Description => DetailField::AcceptanceCriteria,
-                                                            DetailField::AcceptanceCriteria => DetailField::Title,
-                                                        };
+                                                        state.active_field =
+                                                            match state.active_field {
+                                                                DetailField::Title => {
+                                                                    DetailField::Description
+                                                                }
+                                                                DetailField::Description => {
+                                                                    DetailField::AcceptanceCriteria
+                                                                }
+                                                                DetailField::AcceptanceCriteria => {
+                                                                    DetailField::Title
+                                                                }
+                                                            };
                                                     }
                                                 }
                                             }
                                             KeyCode::BackTab => {
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
-                                                        state.active_field = match state.active_field {
-                                                            DetailField::Title => DetailField::AcceptanceCriteria,
-                                                            DetailField::Description => DetailField::Title,
-                                                            DetailField::AcceptanceCriteria => DetailField::Description,
-                                                        };
+                                                        state.active_field =
+                                                            match state.active_field {
+                                                                DetailField::Title => {
+                                                                    DetailField::AcceptanceCriteria
+                                                                }
+                                                                DetailField::Description => {
+                                                                    DetailField::Title
+                                                                }
+                                                                DetailField::AcceptanceCriteria => {
+                                                                    DetailField::Description
+                                                                }
+                                                            };
                                                     }
                                                 }
                                             }
                                             KeyCode::Enter => {
-                                                let selected_item = app.get_selected_item().cloned();
+                                                let selected_item =
+                                                    app.get_selected_item().cloned();
                                                 let board = app.current_board().clone();
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
                                                         if let Some(item) = selected_item {
                                                             let local_state = state.clone();
                                                             let item_for_spawn = item.clone();
                                                             tokio::spawn(async move {
-                                                                if let Err(err) = update_work_item_in_ado(
-                                                                    &board,
-                                                                    &item_for_spawn,
-                                                                    &local_state,
-                                                                )
-                                                                .await
+                                                                if let Err(err) =
+                                                                    update_work_item_in_ado(
+                                                                        &board,
+                                                                        &item_for_spawn,
+                                                                        &local_state,
+                                                                    )
+                                                                    .await
                                                                 {
-                                                                    eprintln!("Failed to update item: {:?}", err);
+                                                                    eprintln!(
+                                                                        "Failed to update item: {:?}",
+                                                                        err
+                                                                    );
                                                                 }
                                                             });
                                                             if let Some(current_item) = app
@@ -1188,11 +1495,14 @@ fn run_app<B: ratatui::backend::Backend>(
                                                                 .iter_mut()
                                                                 .find(|i| i.id == item.id)
                                                             {
-                                                                current_item.title = state.title.clone();
+                                                                current_item.title =
+                                                                    state.title.clone();
                                                                 current_item.description =
                                                                     state.description.clone();
                                                                 current_item.acceptance_criteria =
-                                                                    state.acceptance_criteria.clone();
+                                                                    state
+                                                                        .acceptance_criteria
+                                                                        .clone();
                                                             }
                                                         }
                                                         state.is_editing = false;
@@ -1200,11 +1510,17 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Char(c) => {
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
                                                         match state.active_field {
-                                                            DetailField::Title => state.title.push(c),
-                                                            DetailField::Description => state.description.push(c),
+                                                            DetailField::Title => {
+                                                                state.title.push(c)
+                                                            }
+                                                            DetailField::Description => {
+                                                                state.description.push(c)
+                                                            }
                                                             DetailField::AcceptanceCriteria => {
                                                                 state.acceptance_criteria.push(c)
                                                             }
@@ -1213,11 +1529,17 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Delete => {
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
                                                         match state.active_field {
-                                                            DetailField::Title => state.title.clear(),
-                                                            DetailField::Description => state.description.clear(),
+                                                            DetailField::Title => {
+                                                                state.title.clear()
+                                                            }
+                                                            DetailField::Description => {
+                                                                state.description.clear()
+                                                            }
                                                             DetailField::AcceptanceCriteria => {
                                                                 state.acceptance_criteria.clear()
                                                             }
@@ -1226,7 +1548,9 @@ fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Backspace => {
-                                                if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
                                                     if state.is_editing {
                                                         match state.active_field {
                                                             DetailField::Title => {
@@ -1254,4 +1578,3 @@ fn run_app<B: ratatui::backend::Backend>(
         }
     }
 }
-
