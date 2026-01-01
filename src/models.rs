@@ -20,6 +20,7 @@ pub struct WorkItem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DetailField {
     Title,
+    Dynamic(usize),
 }
 
 lazy_static! {

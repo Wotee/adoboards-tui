@@ -289,7 +289,10 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
             "No fields for this layout".to_string(),
         )]
     } else {
-        extra_fields.clone()
+        extra_fields
+            .iter()
+            .map(|(label, _, value)| (label.clone(), value.clone()))
+            .collect()
     };
 
     let constraints: Vec<Constraint> = fields_to_render
@@ -301,22 +304,23 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .constraints(constraints)
         .split(chunks[1]);
 
-    for ((key, value), area) in fields_to_render.iter().zip(field_chunks.iter()) {
+    for (idx, ((key, value), area)) in fields_to_render.iter().zip(field_chunks.iter()).enumerate()
+    {
+        let is_active =
+            matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == idx);
         let block = Block::default()
             .title(key.as_str())
             .borders(Borders::ALL)
-            .border_type(if is_editing && active_field == DetailField::Title {
+            .border_type(if is_editing && is_active {
                 ratatui::widgets::BorderType::Thick
             } else {
                 ratatui::widgets::BorderType::Plain
             })
-            .border_style(Style::default().fg(
-                if is_editing && active_field == DetailField::Title {
-                    Color::Cyan
-                } else {
-                    Color::LightBlue
-                },
-            ));
+            .border_style(Style::default().fg(if is_editing && is_active {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            }));
 
         let lines = vec![Line::from(Span::raw(value.clone()))];
         let paragraph = Paragraph::new(lines)

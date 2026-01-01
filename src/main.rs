@@ -14,7 +14,7 @@ mod models;
 mod services;
 mod ui;
 
-use crate::app::{prefetch_layouts, App, LoadingState, run_app};
+use crate::app::{App, LoadingState, prefetch_layouts, run_app};
 use crate::config::load_config_or_prompt;
 use crate::services::{
     fetch_process_template_type, fetch_process_work_item_types, fetch_project_id, get_backlog_ids,
@@ -89,8 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }?;
 
-                    let used_types: BTreeSet<String> =
-                        items_result.iter().map(|item| item.work_item_type.clone()).collect();
+                    let used_types: BTreeSet<String> = items_result
+                        .iter()
+                        .map(|item| item.work_item_type.clone())
+                        .collect();
                     let mut reference_names: Vec<String> = Vec::new();
                     for (name, reference) in work_item_types {
                         if used_types.contains(&name) {

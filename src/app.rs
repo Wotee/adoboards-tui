@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{Terminal, widgets::ListState};
 
@@ -61,7 +61,7 @@ pub struct DetailEditState {
     pub is_editing: bool,
     pub active_field: DetailField,
     pub title: String,
-    pub visible_fields: Vec<(String, String)>,
+    pub visible_fields: Vec<(String, String, String)>,
 }
 
 impl DetailEditState {
@@ -438,10 +438,7 @@ pub async fn prefetch_layouts(
                 cache.insert(key, controls);
             }
             Err(err) => {
-                eprintln!(
-                    "Failed to prefetch layout for {}: {}",
-                    reference_name, err
-                );
+                eprintln!("Failed to prefetch layout for {}: {}", reference_name, err);
             }
         }
     }
@@ -653,7 +650,9 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     .is_some()
                                                 {
                                                     app.view = AppView::Detail;
-                                                    if let Some(item) = app.get_selected_item().cloned() {
+                                                    if let Some(item) =
+                                                        app.get_selected_item().cloned()
+                                                    {
                                                         let reference_name = app
                                                             .work_item_types
                                                             .get(&item.work_item_type)
@@ -664,10 +663,14 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             app.process_template_type.clone(),
                                                             reference_name,
                                                         ) {
-                                                            let cache_key =
-                                                                (process_id.clone(), reference.clone());
-                                                            let organization =
-                                                                app.current_source().organization.clone();
+                                                            let cache_key = (
+                                                                process_id.clone(),
+                                                                reference.clone(),
+                                                            );
+                                                            let organization = app
+                                                                .current_source()
+                                                                .organization
+                                                                .clone();
                                                             let controls = if let Some(cached) =
                                                                 app.layout_cache.get(&cache_key)
                                                             {
@@ -703,10 +706,13 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     item.fields
                                                                         .get(&id)
                                                                         .cloned()
-                                                                        .map(|value| (label, value))
+                                                                        .map(|value| {
+                                                                            (label, id, value)
+                                                                        })
                                                                 })
                                                                 .collect();
-                                                            edit_state.visible_fields = visible_fields;
+                                                            edit_state.visible_fields =
+                                                                visible_fields;
                                                         }
                                                         app.detail_view_state.edit_state =
                                                             Some(edit_state);
@@ -748,8 +754,15 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                             app.detail_view_state.edit_state.as_mut()
                                         {
                                             if state.is_editing {
-                                                if state.active_field == DetailField::Title {
-                                                    state.title.push(c)
+                                                match state.active_field {
+                                                    DetailField::Title => state.title.push(c),
+                                                    DetailField::Dynamic(idx) => {
+                                                        if let Some(field) =
+                                                            state.visible_fields.get_mut(idx)
+                                                        {
+                                                            field.2.push(c)
+                                                        }
+                                                    }
                                                 }
                                                 app.last_key_press = None;
                                                 continue;
@@ -759,22 +772,28 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                         let last_key = app.last_key_press;
 
                                         if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                            app.view = AppView::List
-                                        }
-                                        if key_matches_sequence(c, last_key, &app.keys.open) {
-                                            app.open_item()
-                                        }
-                                        if key_matches_sequence(c, last_key, &app.keys.edit_item) {
-                                            if let Some(item) = app.get_selected_item() {
-                                                app.detail_view_state.edit_state =
-                                                    Some(DetailEditState::new_from_item(item));
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    state.is_editing = true;
-                                                }
+                                            app.view = AppView::List;
+                                        } else if key_matches_sequence(c, last_key, &app.keys.open)
+                                        {
+                                            app.open_item();
+                                        } else if key_matches_sequence(
+                                            c,
+                                            last_key,
+                                            &app.keys.edit_item,
+                                        ) {
+                                            if let Some(state) =
+                                                app.detail_view_state.edit_state.as_mut()
+                                            {
+                                                state.is_editing = true;
+                                                state.active_field = DetailField::Title;
+                                            } else if let Some(item) = app.get_selected_item() {
+                                                let mut state =
+                                                    DetailEditState::new_from_item(item);
+                                                state.is_editing = true;
+                                                app.detail_view_state.edit_state = Some(state);
                                             }
                                         }
+
                                         app.last_key_press = Some(key.code);
                                     } else {
                                         match key.code {
@@ -786,9 +805,13 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                 {
                                                     if state.is_editing {
                                                         if let Some(item) = selected_item {
-                                                            *state = DetailEditState::new_from_item(
-                                                                &item,
-                                                            );
+                                                            let mut new_state =
+                                                                DetailEditState::new_from_item(
+                                                                    &item,
+                                                                );
+                                                            new_state.visible_fields =
+                                                                state.visible_fields.clone();
+                                                            *state = new_state;
                                                         }
                                                         state.is_editing = false;
                                                     } else {
@@ -803,7 +826,25 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        // Tab switching is disabled when only title is editable
+                                                        let total_fields =
+                                                            state.visible_fields.len();
+                                                        let next = match state.active_field {
+                                                            DetailField::Title => {
+                                                                if total_fields == 0 {
+                                                                    DetailField::Title
+                                                                } else {
+                                                                    DetailField::Dynamic(0)
+                                                                }
+                                                            }
+                                                            DetailField::Dynamic(idx) => {
+                                                                if idx + 1 < total_fields {
+                                                                    DetailField::Dynamic(idx + 1)
+                                                                } else {
+                                                                    DetailField::Title
+                                                                }
+                                                            }
+                                                        };
+                                                        state.active_field = next;
                                                     }
                                                 }
                                             }
@@ -812,7 +853,27 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        // Shift-Tab switching disabled for now
+                                                        let total_fields =
+                                                            state.visible_fields.len();
+                                                        let prev = match state.active_field {
+                                                            DetailField::Title => {
+                                                                if total_fields == 0 {
+                                                                    DetailField::Title
+                                                                } else {
+                                                                    DetailField::Dynamic(
+                                                                        total_fields - 1,
+                                                                    )
+                                                                }
+                                                            }
+                                                            DetailField::Dynamic(idx) => {
+                                                                if idx == 0 {
+                                                                    DetailField::Title
+                                                                } else {
+                                                                    DetailField::Dynamic(idx - 1)
+                                                                }
+                                                            }
+                                                        };
+                                                        state.active_field = prev;
                                                     }
                                                 }
                                             }
@@ -854,21 +915,17 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             {
                                                                 current_item.title =
                                                                     state.title.clone();
+                                                                for (_, reference, value) in
+                                                                    &state.visible_fields
+                                                                {
+                                                                    current_item.fields.insert(
+                                                                        reference.clone(),
+                                                                        value.clone(),
+                                                                    );
+                                                                }
                                                             }
                                                         }
                                                         state.is_editing = false;
-                                                    }
-                                                }
-                                            }
-                                            KeyCode::Char(c) => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if state.active_field == DetailField::Title
-                                                        {
-                                                            state.title.push(c)
-                                                        }
                                                     }
                                                 }
                                             }
@@ -877,9 +934,18 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        if state.active_field == DetailField::Title
-                                                        {
-                                                            state.title.clear()
+                                                        match state.active_field {
+                                                            DetailField::Title => {
+                                                                state.title.clear()
+                                                            }
+                                                            DetailField::Dynamic(idx) => {
+                                                                if let Some(field) = state
+                                                                    .visible_fields
+                                                                    .get_mut(idx)
+                                                                {
+                                                                    field.2.clear();
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -889,15 +955,25 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        if state.active_field == DetailField::Title
-                                                        {
-                                                            state.title.pop();
+                                                        match state.active_field {
+                                                            DetailField::Title => {
+                                                                state.title.pop();
+                                                            }
+                                                            DetailField::Dynamic(idx) => {
+                                                                if let Some(field) = state
+                                                                    .visible_fields
+                                                                    .get_mut(idx)
+                                                                {
+                                                                    field.2.pop();
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
                                             }
                                             _ => {}
                                         }
+                                        app.last_key_press = None;
                                     }
                                 }
                             }

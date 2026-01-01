@@ -208,26 +208,21 @@ pub async fn update_work_item_in_ado(
     let credential = get_credential()?;
     let wit_client = WitClientBuilder::new(credential).build();
 
-    let operations = vec![
-        JsonPatchOperation {
+    let mut operations = vec![JsonPatchOperation {
+        from: None,
+        op: Some(Op::Replace),
+        path: Some("/fields/System.Title".to_string()),
+        value: Some(serde_json::json!(state.title.clone())),
+    }];
+
+    for (_, reference, value) in &state.visible_fields {
+        operations.push(JsonPatchOperation {
             from: None,
             op: Some(Op::Replace),
-            path: Some("/fields/System.Title".to_string()),
-            value: Some(serde_json::json!(state.title.clone())),
-        },
-        JsonPatchOperation {
-            from: None,
-            op: Some(Op::Replace),
-            path: Some("/fields/System.Description".to_string()),
-            value: Some(serde_json::json!(item.description.clone())),
-        },
-        JsonPatchOperation {
-            from: None,
-            op: Some(Op::Replace),
-            path: Some("/fields/Microsoft.VSTS.Common.AcceptanceCriteria".to_string()),
-            value: Some(serde_json::json!(item.acceptance_criteria.clone())),
-        },
-    ];
+            path: Some(format!("/fields/{}", reference)),
+            value: Some(serde_json::json!(value.clone())),
+        });
+    }
 
     wit_client
         .work_items_client()
