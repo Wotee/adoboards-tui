@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{Terminal, widgets::ListState};
+use tokio::sync::oneshot;
 
 use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
 use crate::models::{DetailField, WorkItem};
@@ -78,12 +79,22 @@ impl DetailEditState {
 #[derive(Default)]
 pub struct DetailViewState {
     pub edit_state: Option<DetailEditState>,
+    pub save_status: SaveStatus,
+    pub save_receiver: Option<oneshot::Receiver<Result<(WorkItem, DetailEditState)>>>,
 }
 
 #[derive(Clone)]
 pub enum SourceKind {
     Backlog,
     Iteration(IterationConfig),
+}
+
+#[derive(Default, Clone)]
+pub enum SaveStatus {
+    #[default]
+    Idle,
+    Saving,
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -369,6 +380,159 @@ impl App {
         let current = self.list_view_state.list_state.selected().unwrap_or(0) as isize;
         let next = (current + direction).clamp(0, count as isize - 1);
         self.list_view_state.list_state.select(Some(next as usize));
+    }
+
+    fn clamp_active_field(edit_state: &mut DetailEditState) {
+        match edit_state.active_field {
+            DetailField::Title => {}
+            DetailField::Dynamic(idx) => {
+                let total = edit_state.visible_fields.len();
+                if total == 0 {
+                    edit_state.active_field = DetailField::Title;
+                } else if idx >= total {
+                    edit_state.active_field = DetailField::Dynamic(total - 1);
+                }
+            }
+        }
+    }
+
+    fn rebuild_edit_state_from_item(
+        item: &WorkItem,
+        existing_fields: &[(String, String, String)],
+    ) -> DetailEditState {
+        let mut new_state = DetailEditState::new_from_item(item);
+        new_state.visible_fields = existing_fields
+            .iter()
+            .map(|(label, reference, _)| {
+                let value = item.fields.get(reference).cloned().unwrap_or_default();
+                (label.clone(), reference.clone(), value)
+            })
+            .collect();
+        App::clamp_active_field(&mut new_state);
+        new_state
+    }
+
+    fn cancel_edit(&mut self) {
+        self.detail_view_state.save_receiver = None;
+        let selected_item = self.get_selected_item().cloned();
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            if state.is_editing {
+                let existing_fields = state.visible_fields.clone();
+                if let Some(item) = selected_item {
+                    let new_state = App::rebuild_edit_state_from_item(&item, &existing_fields);
+                    *state = new_state;
+                }
+                state.is_editing = false;
+                self.detail_view_state.save_status = SaveStatus::Idle;
+            } else {
+                self.view = AppView::List;
+            }
+        } else {
+            self.view = AppView::List;
+        }
+    }
+
+    fn begin_edit(&mut self) {
+        self.detail_view_state.save_receiver = None;
+        self.detail_view_state.save_status = SaveStatus::Idle;
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            state.is_editing = true;
+            state.active_field = DetailField::Title;
+            App::clamp_active_field(state);
+        } else if let Some(item) = self.get_selected_item() {
+            let mut state = DetailEditState::new_from_item(item);
+            state.is_editing = true;
+            self.detail_view_state.edit_state = Some(state);
+        }
+    }
+
+    fn apply_typing(&mut self, c: char) {
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            if !state.is_editing {
+                return;
+            }
+            Self::clamp_active_field(state);
+            match state.active_field {
+                DetailField::Title => state.title.push(c),
+                DetailField::Dynamic(idx) => {
+                    if let Some(field) = state.visible_fields.get_mut(idx) {
+                        field.2.push(c);
+                    }
+                }
+            }
+        }
+    }
+
+    fn start_save(&mut self) {
+        let selected_item = self.get_selected_item().cloned();
+        let source = self.current_source().clone();
+        let state_for_save = self.detail_view_state.edit_state.clone();
+        if let (Some(item), Some(save_state)) = (selected_item, state_for_save) {
+            if !save_state.is_editing {
+                return;
+            }
+            let (tx, rx) = oneshot::channel();
+            tokio::spawn(async move {
+                let result = update_work_item_in_ado(
+                    &BoardConfig {
+                        organization: source.organization,
+                        project: source.project,
+                        team: source.team,
+                    },
+                    &item,
+                    &save_state,
+                )
+                .await
+                .map(|_| (item, save_state));
+                let _ = tx.send(result);
+            });
+            self.detail_view_state.save_status = SaveStatus::Saving;
+            self.detail_view_state.save_receiver = Some(rx);
+            if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+                state.is_editing = false;
+            }
+        }
+    }
+
+    fn poll_save_completion(&mut self) {
+        if let Some(receiver) = self.detail_view_state.save_receiver.as_mut() {
+            use tokio::sync::oneshot::error::TryRecvError;
+
+            match receiver.try_recv() {
+                Ok(Ok((updated_item, mut updated_state))) => {
+                    if let Some(current_item) =
+                        self.items.iter_mut().find(|i| i.id == updated_item.id)
+                    {
+                        current_item.title = updated_state.title.clone();
+                        for (_, reference, value) in &updated_state.visible_fields {
+                            current_item.fields.insert(reference.clone(), value.clone());
+                        }
+                    }
+                    updated_state.is_editing = false;
+                    App::clamp_active_field(&mut updated_state);
+                    self.detail_view_state.edit_state = Some(updated_state);
+                    self.detail_view_state.save_status = SaveStatus::Idle;
+                    self.detail_view_state.save_receiver = None;
+                }
+                Ok(Err(err)) => {
+                    self.detail_view_state.save_status = SaveStatus::Failed(format!("{}", err));
+                    self.detail_view_state.save_receiver = None;
+                    if let Some(item) = self.get_selected_item().cloned() {
+                        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+                            let existing_fields = state.visible_fields.clone();
+                            let reset = App::rebuild_edit_state_from_item(&item, &existing_fields);
+                            *state = reset;
+                        }
+                    }
+                }
+                Err(TryRecvError::Closed) => {
+                    self.detail_view_state.save_status =
+                        SaveStatus::Failed("Save was cancelled".to_string());
+                    self.detail_view_state.save_receiver = None;
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
     }
 }
 
@@ -716,6 +880,9 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                         }
                                                         app.detail_view_state.edit_state =
                                                             Some(edit_state);
+                                                        app.detail_view_state.save_status =
+                                                            SaveStatus::Idle;
+                                                        app.detail_view_state.save_receiver = None;
                                                     }
                                                 }
                                             }
@@ -749,21 +916,22 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                     }
                                 }
                                 AppView::Detail => {
+                                    app.poll_save_completion();
+
+                                    if matches!(
+                                        app.detail_view_state.save_status,
+                                        SaveStatus::Saving
+                                    ) {
+                                        app.last_key_press = None;
+                                        continue;
+                                    }
+
                                     if let Some(c) = current_char {
                                         if let Some(state) =
                                             app.detail_view_state.edit_state.as_mut()
                                         {
                                             if state.is_editing {
-                                                match state.active_field {
-                                                    DetailField::Title => state.title.push(c),
-                                                    DetailField::Dynamic(idx) => {
-                                                        if let Some(field) =
-                                                            state.visible_fields.get_mut(idx)
-                                                        {
-                                                            field.2.push(c)
-                                                        }
-                                                    }
-                                                }
+                                                app.apply_typing(c);
                                                 app.last_key_press = None;
                                                 continue;
                                             }
@@ -781,45 +949,14 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                             last_key,
                                             &app.keys.edit_item,
                                         ) {
-                                            if let Some(state) =
-                                                app.detail_view_state.edit_state.as_mut()
-                                            {
-                                                state.is_editing = true;
-                                                state.active_field = DetailField::Title;
-                                            } else if let Some(item) = app.get_selected_item() {
-                                                let mut state =
-                                                    DetailEditState::new_from_item(item);
-                                                state.is_editing = true;
-                                                app.detail_view_state.edit_state = Some(state);
-                                            }
+                                            app.begin_edit();
                                         }
 
                                         app.last_key_press = Some(key.code);
                                     } else {
                                         match key.code {
                                             KeyCode::Esc => {
-                                                let selected_item =
-                                                    app.get_selected_item().cloned();
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if let Some(item) = selected_item {
-                                                            let mut new_state =
-                                                                DetailEditState::new_from_item(
-                                                                    &item,
-                                                                );
-                                                            new_state.visible_fields =
-                                                                state.visible_fields.clone();
-                                                            *state = new_state;
-                                                        }
-                                                        state.is_editing = false;
-                                                    } else {
-                                                        app.view = AppView::List;
-                                                    }
-                                                } else {
-                                                    app.view = AppView::List;
-                                                }
+                                                app.cancel_edit();
                                             }
                                             KeyCode::Tab => {
                                                 if let Some(state) =
@@ -845,6 +982,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             }
                                                         };
                                                         state.active_field = next;
+                                                        App::clamp_active_field(state);
                                                     }
                                                 }
                                             }
@@ -874,66 +1012,19 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             }
                                                         };
                                                         state.active_field = prev;
+                                                        App::clamp_active_field(state);
                                                     }
                                                 }
                                             }
                                             KeyCode::Enter => {
-                                                let selected_item =
-                                                    app.get_selected_item().cloned();
-                                                let source = app.current_source().clone();
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if let Some(item) = selected_item {
-                                                            let local_state = state.clone();
-                                                            let item_for_spawn = item.clone();
-                                                            tokio::spawn(async move {
-                                                                if let Err(err) =
-                                                                    update_work_item_in_ado(
-                                                                        &BoardConfig {
-                                                                            organization: source
-                                                                                .organization,
-                                                                            project: source.project,
-                                                                            team: source.team,
-                                                                        },
-                                                                        &item_for_spawn,
-                                                                        &local_state,
-                                                                    )
-                                                                    .await
-                                                                {
-                                                                    eprintln!(
-                                                                        "Failed to update item: {:?}",
-                                                                        err
-                                                                    );
-                                                                }
-                                                            });
-                                                            if let Some(current_item) = app
-                                                                .items
-                                                                .iter_mut()
-                                                                .find(|i| i.id == item.id)
-                                                            {
-                                                                current_item.title =
-                                                                    state.title.clone();
-                                                                for (_, reference, value) in
-                                                                    &state.visible_fields
-                                                                {
-                                                                    current_item.fields.insert(
-                                                                        reference.clone(),
-                                                                        value.clone(),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                        state.is_editing = false;
-                                                    }
-                                                }
+                                                app.start_save();
                                             }
                                             KeyCode::Delete => {
                                                 if let Some(state) =
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
+                                                        App::clamp_active_field(state);
                                                         match state.active_field {
                                                             DetailField::Title => {
                                                                 state.title.clear()
@@ -955,6 +1046,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
+                                                        App::clamp_active_field(state);
                                                         match state.active_field {
                                                             DetailField::Title => {
                                                                 state.title.pop();

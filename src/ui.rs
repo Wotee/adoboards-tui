@@ -328,6 +328,31 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
             .block(block);
         f.render_widget(paragraph, *area);
     }
+
+    let status_line = match &app.detail_view_state.save_status {
+        crate::app::SaveStatus::Idle => None,
+        crate::app::SaveStatus::Saving => Some("Saving...".to_string()),
+        crate::app::SaveStatus::Failed(msg) => Some(format!("Save failed: {}", msg)),
+    };
+
+    if let Some(status) = status_line {
+        let status_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title("Status");
+        let status_para = Paragraph::new(Line::from(status))
+            .style(Style::default().fg(Color::Yellow))
+            .block(status_block)
+            .wrap(Wrap { trim: true });
+        let status_area = Rect {
+            x: chunks[0].x,
+            y: chunks[1].y.saturating_sub(3).max(chunks[0].y + 3),
+            width: chunks[1].width,
+            height: 3,
+        };
+        f.render_widget(Clear, status_area);
+        f.render_widget(status_para, status_area);
+    }
 }
 
 pub fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
