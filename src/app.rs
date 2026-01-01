@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 
 use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
 use crate::models::{DetailField, WorkItem};
-use crate::services::{fetch_work_item_layout, update_work_item_in_ado};
+use crate::services::{WorkItemFieldInfo, fetch_work_item_layout, update_work_item_in_ado};
 use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
 
 pub enum AppView {
@@ -58,11 +58,49 @@ impl Default for ListViewState {
 }
 
 #[derive(Clone)]
+pub struct VisibleField {
+    pub label: String,
+    pub reference: String,
+    pub value: String,
+    pub allowed_values: Option<Vec<String>>,
+    pub selected_index: Option<usize>,
+}
+
+impl VisibleField {
+    pub fn with_value(
+        label: String,
+        reference: String,
+        value: String,
+        allowed_values: Option<Vec<String>>,
+    ) -> Self {
+        let selected_index = allowed_values
+            .as_ref()
+            .and_then(|vals| vals.iter().position(|v| v == &value));
+        Self {
+            label,
+            reference,
+            value,
+            allowed_values,
+            selected_index,
+        }
+    }
+
+    fn select_value(&mut self, idx: usize) {
+        if let Some(values) = self.allowed_values.as_ref() {
+            if let Some(choice) = values.get(idx) {
+                self.value = choice.clone();
+                self.selected_index = Some(idx);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct DetailEditState {
     pub is_editing: bool,
     pub active_field: DetailField,
     pub title: String,
-    pub visible_fields: Vec<(String, String, String)>,
+    pub visible_fields: Vec<VisibleField>,
 }
 
 impl DetailEditState {
@@ -120,6 +158,7 @@ pub struct App {
     pub work_item_types: BTreeMap<String, String>,
     pub process_template_type: Option<String>,
     pub layout_cache: HashMap<(String, String), Vec<(String, String)>>,
+    pub field_meta_cache: HashMap<String, Vec<WorkItemFieldInfo>>,
 }
 
 impl App {
@@ -165,12 +204,14 @@ impl App {
             work_item_types: BTreeMap::new(),
             process_template_type: None,
             layout_cache: HashMap::new(),
+            field_meta_cache: HashMap::new(),
         }
     }
 
     pub fn set_work_item_types(&mut self, types: BTreeMap<String, String>) {
         self.work_item_types = types;
         self.clear_layout_cache();
+        self.field_meta_cache.clear();
     }
 
     pub fn clear_layout_cache(&mut self) {
@@ -180,6 +221,7 @@ impl App {
     pub fn set_process_template_type(&mut self, process_template_type: String) {
         self.process_template_type = Some(process_template_type);
         self.clear_layout_cache();
+        self.field_meta_cache.clear();
     }
 
     pub fn current_source(&self) -> &SourceEntry {
@@ -398,14 +440,23 @@ impl App {
 
     fn rebuild_edit_state_from_item(
         item: &WorkItem,
-        existing_fields: &[(String, String, String)],
+        existing_fields: &[VisibleField],
     ) -> DetailEditState {
         let mut new_state = DetailEditState::new_from_item(item);
         new_state.visible_fields = existing_fields
             .iter()
-            .map(|(label, reference, _)| {
-                let value = item.fields.get(reference).cloned().unwrap_or_default();
-                (label.clone(), reference.clone(), value)
+            .map(|field| {
+                let value = item
+                    .fields
+                    .get(&field.reference)
+                    .cloned()
+                    .unwrap_or_default();
+                VisibleField::with_value(
+                    field.label.clone(),
+                    field.reference.clone(),
+                    value,
+                    field.allowed_values.clone(),
+                )
             })
             .collect();
         App::clamp_active_field(&mut new_state);
@@ -456,7 +507,8 @@ impl App {
                 DetailField::Title => state.title.push(c),
                 DetailField::Dynamic(idx) => {
                     if let Some(field) = state.visible_fields.get_mut(idx) {
-                        field.2.push(c);
+                        field.value.push(c);
+                        field.selected_index = None;
                     }
                 }
             }
@@ -504,8 +556,10 @@ impl App {
                         self.items.iter_mut().find(|i| i.id == updated_item.id)
                     {
                         current_item.title = updated_state.title.clone();
-                        for (_, reference, value) in &updated_state.visible_fields {
-                            current_item.fields.insert(reference.clone(), value.clone());
+                        for field in &updated_state.visible_fields {
+                            current_item
+                                .fields
+                                .insert(field.reference.clone(), field.value.clone());
                         }
                     }
                     updated_state.is_editing = false;
@@ -871,7 +925,21 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                         .get(&id)
                                                                         .cloned()
                                                                         .map(|value| {
-                                                                            (label, id, value)
+                                                                            let allowed_values = app
+                                                                                .field_meta_cache
+                                                                                .get(&item.work_item_type)
+                                                                                .and_then(|fields| {
+                                                                                    fields
+                                                                                        .iter()
+                                                                                        .find(|f| f.reference_name == id)
+                                                                                        .map(|f| f.allowed_values.clone())
+                                                                                });
+                                                                            VisibleField::with_value(
+                                                                                label,
+                                                                                id,
+                                                                                value,
+                                                                                allowed_values,
+                                                                            )
                                                                         })
                                                                 })
                                                                 .collect();
@@ -1016,7 +1084,100 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     }
                                                 }
                                             }
+                                            KeyCode::Up => {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
+                                                    if state.is_editing {
+                                                        if let DetailField::Dynamic(idx) =
+                                                            state.active_field
+                                                        {
+                                                            if let Some(field) =
+                                                                state.visible_fields.get_mut(idx)
+                                                            {
+                                                                if let Some(options) =
+                                                                    field.allowed_values.as_ref()
+                                                                {
+                                                                    if !options.is_empty() {
+                                                                        let next_index = match field
+                                                                            .selected_index
+                                                                        {
+                                                                            Some(current)
+                                                                                if current > 0 =>
+                                                                            {
+                                                                                current - 1
+                                                                            }
+                                                                            _ => options.len() - 1,
+                                                                        };
+                                                                        field.selected_index =
+                                                                            Some(next_index);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            KeyCode::Down => {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
+                                                    if state.is_editing {
+                                                        if let DetailField::Dynamic(idx) =
+                                                            state.active_field
+                                                        {
+                                                            if let Some(field) =
+                                                                state.visible_fields.get_mut(idx)
+                                                            {
+                                                                if let Some(options) =
+                                                                    field.allowed_values.as_ref()
+                                                                {
+                                                                    if !options.is_empty() {
+                                                                        let next_index = match field
+                                                                            .selected_index
+                                                                        {
+                                                                            Some(current) => {
+                                                                                (current + 1)
+                                                                                    % options.len()
+                                                                            }
+                                                                            None => 0,
+                                                                        };
+                                                                        field.selected_index =
+                                                                            Some(next_index);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             KeyCode::Enter => {
+                                                if let Some(state) =
+                                                    app.detail_view_state.edit_state.as_mut()
+                                                {
+                                                    if state.is_editing {
+                                                        if let DetailField::Dynamic(idx) =
+                                                            state.active_field
+                                                        {
+                                                            if let Some(field) =
+                                                                state.visible_fields.get_mut(idx)
+                                                            {
+                                                                if let Some(options) =
+                                                                    field.allowed_values.as_ref()
+                                                                {
+                                                                    if !options.is_empty() {
+                                                                        let next_index = field
+                                                                            .selected_index
+                                                                            .unwrap_or(0);
+                                                                        field.select_value(
+                                                                            next_index,
+                                                                        );
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 app.start_save();
                                             }
                                             KeyCode::Delete => {
@@ -1034,7 +1195,8 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .visible_fields
                                                                     .get_mut(idx)
                                                                 {
-                                                                    field.2.clear();
+                                                                    field.value.clear();
+                                                                    field.selected_index = None;
                                                                 }
                                                             }
                                                         }
@@ -1056,7 +1218,8 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .visible_fields
                                                                     .get_mut(idx)
                                                                 {
-                                                                    field.2.pop();
+                                                                    field.value.pop();
+                                                                    field.selected_index = None;
                                                                 }
                                                             }
                                                         }

@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, anyhow};
+use std::collections::HashMap;
+
 use azure_devops_rust_api::Credential;
 use azure_devops_rust_api::core::ClientBuilder as CoreClientBuilder;
 use azure_devops_rust_api::processes::ClientBuilder as ProcessesClientBuilder;
@@ -200,6 +202,73 @@ pub async fn fetch_work_item_layout(
         .context("Failed to fetch work item layout")
 }
 
+#[derive(Clone, Debug)]
+pub struct WorkItemFieldInfo {
+    pub reference_name: String,
+    pub name: String,
+    pub allowed_values: Vec<String>,
+}
+
+pub async fn fetch_work_item_type_fields(
+    organization: &str,
+    project: &str,
+    work_item_type_ref: &str,
+) -> Result<Vec<WorkItemFieldInfo>> {
+    let credential = get_credential()?;
+    let wit_client = WitClientBuilder::new(credential).build();
+
+    let fields = wit_client
+        .work_item_types_field_client()
+        .list(organization, project, work_item_type_ref)
+        .expand("allowedValues")
+        .await?
+        .value;
+
+    let mapped = fields
+        .into_iter()
+        .filter_map(|f| {
+            let base = f
+                .work_item_type_field_instance_base
+                .work_item_field_reference;
+            let reference_name = base.reference_name?;
+            let name = base.name.unwrap_or_else(|| reference_name.clone());
+            Some(WorkItemFieldInfo {
+                reference_name,
+                name,
+                allowed_values: f
+                    .allowed_values
+                    .into_iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect(),
+            })
+        })
+        .collect();
+
+    Ok(mapped)
+}
+
+pub async fn build_field_metadata_cache(
+    organization: &str,
+    project: &str,
+    display_names: Vec<String>,
+) -> HashMap<String, Vec<WorkItemFieldInfo>> {
+    let mut cache = HashMap::new();
+    for display_name in display_names {
+        match fetch_work_item_type_fields(organization, project, &display_name).await {
+            Ok(fields) => {
+                cache.insert(display_name.clone(), fields);
+            }
+            Err(err) => {
+                eprintln!(
+                    "Failed to fetch field metadata for {}: {}",
+                    display_name, err
+                );
+            }
+        }
+    }
+    cache
+}
+
 pub async fn update_work_item_in_ado(
     board: &BoardConfig,
     item: &WorkItem,
@@ -215,12 +284,12 @@ pub async fn update_work_item_in_ado(
         value: Some(serde_json::json!(state.title.clone())),
     }];
 
-    for (_, reference, value) in &state.visible_fields {
+    for field in &state.visible_fields {
         operations.push(JsonPatchOperation {
             from: None,
             op: Some(Op::Replace),
-            path: Some(format!("/fields/{}", reference)),
-            value: Some(serde_json::json!(value.clone())),
+            path: Some(format!("/fields/{}", field.reference)),
+            value: Some(serde_json::json!(field.value.clone())),
         });
     }
 

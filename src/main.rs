@@ -17,8 +17,8 @@ mod ui;
 use crate::app::{App, LoadingState, prefetch_layouts, run_app};
 use crate::config::load_config_or_prompt;
 use crate::services::{
-    fetch_process_template_type, fetch_process_work_item_types, fetch_project_id, get_backlog_ids,
-    get_items, get_iteration_ids, resolve_iteration_id,
+    build_field_metadata_cache, fetch_process_template_type, fetch_process_work_item_types,
+    fetch_project_id, get_backlog_ids, get_items, get_iteration_ids, resolve_iteration_id,
 };
 use crate::ui::draw_status_screen;
 
@@ -93,21 +93,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .iter()
                         .map(|item| item.work_item_type.clone())
                         .collect();
-                    let mut reference_names: Vec<String> = Vec::new();
-                    for (name, reference) in work_item_types {
-                        if used_types.contains(&name) {
-                            reference_names.push(reference);
+
+                    // work_item_types: display name -> reference name
+                    // layouts require reference names; field metadata requires display names
+                    let mut layout_reference_names: Vec<String> = Vec::new();
+                    let mut metadata_display_names: Vec<String> = Vec::new();
+                    for (display, reference) in work_item_types {
+                        if used_types.contains(&display) {
+                            layout_reference_names.push(reference);
+                            metadata_display_names.push(display);
                         }
                     }
 
                     let organization = source.organization.clone();
+                    let fields_organization = organization.clone();
                     let process_id = process_template_type.clone();
+                    let fields_project = source.project.clone();
                     let layout_handle = tokio::spawn(async move {
-                        prefetch_layouts(&organization, &process_id, reference_names).await
+                        prefetch_layouts(&organization, &process_id, layout_reference_names).await
+                    });
+                    let fields_handle = tokio::spawn(async move {
+                        build_field_metadata_cache(
+                            &fields_organization,
+                            &fields_project,
+                            metadata_display_names,
+                        )
+                        .await
                     });
 
                     if let Ok(prefetched) = layout_handle.await {
                         app.layout_cache = prefetched;
+                    }
+                    if let Ok(meta) = fields_handle.await {
+                        app.field_meta_cache = meta;
                     }
 
                     Ok(items_result)

@@ -252,7 +252,7 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
         .split(f.area());
 
-    let (title_value, active_field, extra_fields) = if let Some(state) = edit_state {
+    let (title_value, active_field, mut fields_to_render) = if let Some(state) = edit_state {
         (
             state.title.clone(),
             state.active_field,
@@ -283,18 +283,14 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .block(title_block);
     f.render_widget(title_paragraph, chunks[0]);
 
-    let fields_to_render: Vec<(String, String)> = if extra_fields.is_empty() {
-        vec![(
+    if fields_to_render.is_empty() {
+        fields_to_render.push(crate::app::VisibleField::with_value(
             "No layout fields".to_string(),
+            "".to_string(),
             "No fields for this layout".to_string(),
-        )]
-    } else {
-        extra_fields
-            .iter()
-            .map(|(label, _, value)| (label.clone(), value.clone()))
-            .collect()
-    };
-
+            None,
+        ));
+    }
     let constraints: Vec<Constraint> = fields_to_render
         .iter()
         .map(|_| Constraint::Min(3))
@@ -304,12 +300,15 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .constraints(constraints)
         .split(chunks[1]);
 
-    for (idx, ((key, value), area)) in fields_to_render.iter().zip(field_chunks.iter()).enumerate()
+    for (idx, (field, area)) in fields_to_render
+        .iter_mut()
+        .zip(field_chunks.iter())
+        .enumerate()
     {
         let is_active =
             matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == idx);
         let block = Block::default()
-            .title(key.as_str())
+            .title(field.label.as_str())
             .borders(Borders::ALL)
             .border_type(if is_editing && is_active {
                 ratatui::widgets::BorderType::Thick
@@ -322,7 +321,31 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
                 Color::LightBlue
             }));
 
-        let lines = vec![Line::from(Span::raw(value.clone()))];
+        let mut lines = vec![Line::from(Span::raw(field.value.clone()))];
+        if is_editing && is_active {
+            if let Some(options) = field.allowed_values.as_ref() {
+                if !options.is_empty() {
+                    let rendered = options
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            if Some(i) == field.selected_index {
+                                Span::styled(
+                                    v.clone(),
+                                    Style::default()
+                                        .fg(Color::Cyan)
+                                        .add_modifier(Modifier::BOLD),
+                                )
+                            } else {
+                                Span::raw(v.clone())
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    lines.push(Line::from(rendered));
+                }
+            }
+        }
+
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(block);
