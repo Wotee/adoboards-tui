@@ -1,12 +1,16 @@
-use crate::config::BoardConfig;
-use crate::models::{WorkItem, clean_ado_text};
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use azure_devops_rust_api::Credential;
+use azure_devops_rust_api::core::ClientBuilder as CoreClientBuilder;
+use azure_devops_rust_api::processes::ClientBuilder as ProcessesClientBuilder;
+use azure_devops_rust_api::processes::models::FormLayout;
 use azure_devops_rust_api::wit::ClientBuilder as WitClientBuilder;
-use azure_devops_rust_api::wit::models::WorkItem as ADOWorkItem;
-use azure_devops_rust_api::wit::models::{JsonPatchOperation, json_patch_operation::Op};
+use azure_devops_rust_api::wit::models::json_patch_operation::Op;
+use azure_devops_rust_api::wit::models::{JsonPatchOperation, WorkItem as ADOWorkItem};
 use azure_devops_rust_api::work::ClientBuilder as WorkClientBuilder;
 use azure_identity::AzureCliCredential;
+
+use crate::config::BoardConfig;
+use crate::models::{WorkItem, clean_ado_text};
 
 fn authenticate_with_cli_credential() -> Result<Credential> {
     let azure_cli_credential = AzureCliCredential::new(None)?;
@@ -120,6 +124,82 @@ pub async fn get_items(
     Ok(items)
 }
 
+pub async fn fetch_project_id(organization: &str, project_name: &str) -> Result<String> {
+    let credential = get_credential()?;
+    let core_client = CoreClientBuilder::new(credential).build();
+
+    let project = core_client
+        .projects_client()
+        .get(organization, project_name)
+        .await?
+        .team_project_reference
+        .id
+        .ok_or_else(|| anyhow!("Project id missing in response"))?;
+
+    Ok(project)
+}
+
+pub async fn fetch_process_template_type(organization: &str, project_id: &str) -> Result<String> {
+    let credential = get_credential()?;
+    let core_client = CoreClientBuilder::new(credential).build();
+
+    let properties = core_client
+        .projects_client()
+        .get_project_properties(organization, project_id)
+        .keys("System.ProcessTemplateType")
+        .await?;
+
+    let process_template_type = properties
+        .value
+        .into_iter()
+        .find(|prop| prop.name.as_deref() == Some("System.ProcessTemplateType"))
+        .and_then(|prop| prop.value)
+        .and_then(|val| val.as_str().map(|s| s.to_string()))
+        .ok_or_else(|| anyhow!("System.ProcessTemplateType not found"))?;
+
+    Ok(process_template_type)
+}
+
+pub async fn fetch_process_work_item_types(
+    organization: &str,
+    process_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let credential = get_credential()?;
+    let processes_client = ProcessesClientBuilder::new(credential).build();
+
+    let work_item_types = processes_client
+        .work_item_types_client()
+        .list(organization, process_id)
+        .await?
+        .value;
+
+    let types = work_item_types
+        .into_iter()
+        .filter_map(|t| {
+            let name = t.name?;
+            let reference_name = t.reference_name?;
+            Some((name, reference_name))
+        })
+        .collect();
+
+    Ok(types)
+}
+
+pub async fn fetch_work_item_layout(
+    organization: &str,
+    process_id: &str,
+    wit_ref_name: &str,
+) -> Result<FormLayout> {
+    let credential = get_credential()?;
+    let processes_client = ProcessesClientBuilder::new(credential).build();
+
+    processes_client
+        .layout_client()
+        .get(organization, process_id, wit_ref_name)
+        .await
+        .context("Failed to fetch work item layout")
+}
+
 pub async fn update_work_item_in_ado(
     board: &BoardConfig,
     item: &WorkItem,
@@ -133,19 +213,19 @@ pub async fn update_work_item_in_ado(
             from: None,
             op: Some(Op::Replace),
             path: Some("/fields/System.Title".to_string()),
-            value: Some(serde_json::json!(state.title)),
+            value: Some(serde_json::json!(state.title.clone())),
         },
         JsonPatchOperation {
             from: None,
             op: Some(Op::Replace),
             path: Some("/fields/System.Description".to_string()),
-            value: Some(serde_json::json!(state.description)),
+            value: Some(serde_json::json!(item.description.clone())),
         },
         JsonPatchOperation {
             from: None,
             op: Some(Op::Replace),
             path: Some("/fields/Microsoft.VSTS.Common.AcceptanceCriteria".to_string()),
-            value: Some(serde_json::json!(state.acceptance_criteria)),
+            value: Some(serde_json::json!(item.acceptance_criteria.clone())),
         },
     ];
 
@@ -179,6 +259,18 @@ impl From<ADOWorkItem> for WorkItem {
             .map(|s| s.to_string())
             .unwrap_or("Unassigned".to_string());
 
+        let fields = item
+            .fields
+            .as_object()
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(key, value)| {
+                        value.as_str().map(|v| (key.clone(), clean_ado_text(v)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         WorkItem {
             id: item.id as u32,
             title: get_and_clean_field("System.Title"),
@@ -187,6 +279,7 @@ impl From<ADOWorkItem> for WorkItem {
             acceptance_criteria: get_and_clean_field("Microsoft.VSTS.Common.AcceptanceCriteria"),
             assigned_to: assigned_to_name,
             state: get_and_clean_field("System.State"),
+            fields,
         }
     }
 }

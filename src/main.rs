@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use crossterm::{
@@ -13,9 +14,12 @@ mod models;
 mod services;
 mod ui;
 
-use crate::app::{App, LoadingState, run_app};
+use crate::app::{prefetch_layouts, App, LoadingState, run_app};
 use crate::config::load_config_or_prompt;
-use crate::services::{get_backlog_ids, get_items, get_iteration_ids, resolve_iteration_id};
+use crate::services::{
+    fetch_process_template_type, fetch_process_work_item_types, fetch_project_id, get_backlog_ids,
+    get_items, get_iteration_ids, resolve_iteration_id,
+};
 use crate::ui::draw_status_screen;
 
 #[tokio::main]
@@ -38,8 +42,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 terminal
                     .draw(|f| draw_status_screen(f, &format!("Loading {}...", source_title)))?;
 
-                let fetch_result = async {
-                    match source.kind {
+                let fetch_result: Result<Vec<_>, anyhow::Error> = async {
+                    let project_id =
+                        fetch_project_id(&source.organization, &source.project).await?;
+                    let process_template_type =
+                        fetch_process_template_type(&source.organization, &project_id).await?;
+                    app.set_process_template_type(process_template_type.clone());
+                    let work_item_types =
+                        fetch_process_work_item_types(&source.organization, &process_template_type)
+                            .await?;
+                    let work_item_types_map: BTreeMap<String, String> =
+                        work_item_types.iter().cloned().collect();
+                    app.set_work_item_types(work_item_types_map.clone());
+
+                    #[allow(unreachable_code)]
+                    let items_result = match source.kind {
                         crate::app::SourceKind::Backlog => {
                             let ids = get_backlog_ids(
                                 &source.organization,
@@ -70,7 +87,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 get_items(&iteration.organization, &iteration.project, ids).await?;
                             Ok::<_, anyhow::Error>(items)
                         }
+                    }?;
+
+                    let used_types: BTreeSet<String> =
+                        items_result.iter().map(|item| item.work_item_type.clone()).collect();
+                    let mut reference_names: Vec<String> = Vec::new();
+                    for (name, reference) in work_item_types {
+                        if used_types.contains(&name) {
+                            reference_names.push(reference);
+                        }
                     }
+
+                    let organization = source.organization.clone();
+                    let process_id = process_template_type.clone();
+                    let layout_handle = tokio::spawn(async move {
+                        prefetch_layouts(&organization, &process_id, reference_names).await
+                    });
+
+                    if let Ok(prefetched) = layout_handle.await {
+                        app.layout_cache = prefetched;
+                    }
+
+                    Ok(items_result)
                 }
                 .await;
 

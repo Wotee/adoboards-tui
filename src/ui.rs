@@ -150,7 +150,7 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints.as_ref())
+        .constraints(constraints.iter().copied())
         .split(f.area());
 
     let items_to_display = app.get_filtered_items();
@@ -249,30 +249,17 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            [
-                Constraint::Length(3),
-                Constraint::Min(0),
-                Constraint::Length(5),
-            ]
-            .as_ref(),
-        )
+        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
         .split(f.area());
 
-    let (title_value, desc_value, ac_value, active_field) = if let Some(state) = edit_state {
+    let (title_value, active_field, extra_fields) = if let Some(state) = edit_state {
         (
             state.title.clone(),
-            state.description.clone(),
-            state.acceptance_criteria.clone(),
             state.active_field,
+            state.visible_fields.clone(),
         )
     } else {
-        (
-            item.title.clone(),
-            item.description.clone(),
-            item.acceptance_criteria.clone(),
-            DetailField::Title,
-        )
+        (item.title.clone(), DetailField::Title, Vec::new())
     };
 
     let title_text = format!("{}: {}", item.id, title_value);
@@ -296,47 +283,47 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
         .block(title_block);
     f.render_widget(title_paragraph, chunks[0]);
 
-    let desc_block = Block::default()
-        .title("Description")
-        .borders(Borders::ALL)
-        .border_type(if is_editing && active_field == DetailField::Description {
-            ratatui::widgets::BorderType::Thick
-        } else {
-            ratatui::widgets::BorderType::Plain
-        })
-        .border_style(Style::default().fg(
-            if is_editing && active_field == DetailField::Description {
-                Color::Cyan
-            } else {
-                Color::LightBlue
-            },
-        ));
-    let desc_paragraph = Paragraph::new(desc_value.clone())
-        .wrap(Wrap { trim: false })
-        .block(desc_block);
-    f.render_widget(desc_paragraph, chunks[1]);
+    let fields_to_render: Vec<(String, String)> = if extra_fields.is_empty() {
+        vec![(
+            "No layout fields".to_string(),
+            "No fields for this layout".to_string(),
+        )]
+    } else {
+        extra_fields.clone()
+    };
 
-    let ac_block = Block::default()
-        .title("Acceptance Criteria")
-        .borders(Borders::ALL)
-        .border_type(
-            if is_editing && active_field == DetailField::AcceptanceCriteria {
+    let constraints: Vec<Constraint> = fields_to_render
+        .iter()
+        .map(|_| Constraint::Min(3))
+        .collect();
+    let field_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(chunks[1]);
+
+    for ((key, value), area) in fields_to_render.iter().zip(field_chunks.iter()) {
+        let block = Block::default()
+            .title(key.as_str())
+            .borders(Borders::ALL)
+            .border_type(if is_editing && active_field == DetailField::Title {
                 ratatui::widgets::BorderType::Thick
             } else {
                 ratatui::widgets::BorderType::Plain
-            },
-        )
-        .border_style(Style::default().fg(
-            if is_editing && active_field == DetailField::AcceptanceCriteria {
-                Color::Cyan
-            } else {
-                Color::LightBlue
-            },
-        ));
-    let ac_paragraph = Paragraph::new(ac_value.clone())
-        .wrap(Wrap { trim: false })
-        .block(ac_block);
-    f.render_widget(ac_paragraph, chunks[2]);
+            })
+            .border_style(Style::default().fg(
+                if is_editing && active_field == DetailField::Title {
+                    Color::Cyan
+                } else {
+                    Color::LightBlue
+                },
+            ));
+
+        let lines = vec![Line::from(Span::raw(value.clone()))];
+        let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(block);
+        f.render_widget(paragraph, *area);
+    }
 }
 
 pub fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use html_escape::decode_html_entities;
 use lazy_static::lazy_static;
 use regex::Regex;
@@ -12,13 +14,12 @@ pub struct WorkItem {
     pub work_item_type: String,
     pub description: String,
     pub acceptance_criteria: String,
+    pub fields: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DetailField {
     Title,
-    Description,
-    AcceptanceCriteria,
 }
 
 lazy_static! {

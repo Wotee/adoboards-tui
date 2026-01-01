@@ -1,10 +1,15 @@
-use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
-use crate::models::{DetailField, WorkItem};
-use crate::services::update_work_item_in_ado;
-use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::io;
+use std::time::Duration;
+
+use anyhow::{anyhow, Result};
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{Terminal, widgets::ListState};
-use std::{collections::BTreeSet, io, time::Duration};
+
+use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
+use crate::models::{DetailField, WorkItem};
+use crate::services::{fetch_work_item_layout, update_work_item_in_ado};
+use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
 
 pub enum AppView {
     List,
@@ -56,8 +61,7 @@ pub struct DetailEditState {
     pub is_editing: bool,
     pub active_field: DetailField,
     pub title: String,
-    pub description: String,
-    pub acceptance_criteria: String,
+    pub visible_fields: Vec<(String, String)>,
 }
 
 impl DetailEditState {
@@ -66,8 +70,7 @@ impl DetailEditState {
             is_editing: false,
             active_field: DetailField::Title,
             title: item.title.clone(),
-            description: item.description.clone(),
-            acceptance_criteria: item.acceptance_criteria.clone(),
+            visible_fields: Vec::new(),
         }
     }
 }
@@ -103,6 +106,9 @@ pub struct App {
     pub me: String,
     pub keys: KeysConfig,
     pub last_key_press: Option<KeyCode>,
+    pub work_item_types: BTreeMap<String, String>,
+    pub process_template_type: Option<String>,
+    pub layout_cache: HashMap<(String, String), Vec<(String, String)>>,
 }
 
 impl App {
@@ -145,7 +151,24 @@ impl App {
             me: config.common.me,
             keys: config.keys,
             last_key_press: None,
+            work_item_types: BTreeMap::new(),
+            process_template_type: None,
+            layout_cache: HashMap::new(),
         }
+    }
+
+    pub fn set_work_item_types(&mut self, types: BTreeMap<String, String>) {
+        self.work_item_types = types;
+        self.clear_layout_cache();
+    }
+
+    pub fn clear_layout_cache(&mut self) {
+        self.layout_cache.clear();
+    }
+
+    pub fn set_process_template_type(&mut self, process_template_type: String) {
+        self.process_template_type = Some(process_template_type);
+        self.clear_layout_cache();
     }
 
     pub fn current_source(&self) -> &SourceEntry {
@@ -367,6 +390,64 @@ pub fn key_matches_sequence(
     false
 }
 
+async fn fetch_visible_controls(
+    organization: &str,
+    process_id: &str,
+    reference_name: &str,
+) -> Result<Vec<(String, String)>> {
+    let layout = fetch_work_item_layout(organization, process_id, reference_name).await?;
+    let page = layout
+        .pages
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No pages in layout"))?;
+    let section = page
+        .sections
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No sections in layout"))?;
+
+    let mut controls = Vec::new();
+    for group in section.groups.into_iter() {
+        if !group.visible.unwrap_or(true) {
+            continue;
+        }
+        for control in group.controls.into_iter() {
+            if control.visible.unwrap_or(true) {
+                if let Some(id) = control.id {
+                    let label = control.label.unwrap_or_else(|| id.clone());
+                    controls.push((id, label));
+                }
+            }
+        }
+    }
+
+    Ok(controls)
+}
+
+pub async fn prefetch_layouts(
+    organization: &str,
+    process_id: &str,
+    reference_names: Vec<String>,
+) -> HashMap<(String, String), Vec<(String, String)>> {
+    let mut cache = HashMap::new();
+    for reference_name in reference_names {
+        let key = (process_id.to_string(), reference_name.clone());
+        match fetch_visible_controls(organization, process_id, &reference_name).await {
+            Ok(controls) => {
+                cache.insert(key, controls);
+            }
+            Err(err) => {
+                eprintln!(
+                    "Failed to prefetch layout for {}: {}",
+                    reference_name, err
+                );
+            }
+        }
+    }
+    cache
+}
+
 pub async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -572,10 +653,63 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     .is_some()
                                                 {
                                                     app.view = AppView::Detail;
-                                                    if let Some(item) = app.get_selected_item() {
-                                                        app.detail_view_state.edit_state = Some(
-                                                            DetailEditState::new_from_item(item),
-                                                        );
+                                                    if let Some(item) = app.get_selected_item().cloned() {
+                                                        let reference_name = app
+                                                            .work_item_types
+                                                            .get(&item.work_item_type)
+                                                            .cloned();
+                                                        let mut edit_state =
+                                                            DetailEditState::new_from_item(&item);
+                                                        if let (Some(process_id), Some(reference)) = (
+                                                            app.process_template_type.clone(),
+                                                            reference_name,
+                                                        ) {
+                                                            let cache_key =
+                                                                (process_id.clone(), reference.clone());
+                                                            let organization =
+                                                                app.current_source().organization.clone();
+                                                            let controls = if let Some(cached) =
+                                                                app.layout_cache.get(&cache_key)
+                                                            {
+                                                                cached.clone()
+                                                            } else {
+                                                                match fetch_visible_controls(
+                                                                    &organization,
+                                                                    &process_id,
+                                                                    &reference,
+                                                                )
+                                                                .await
+                                                                {
+                                                                    Ok(controls) => {
+                                                                        app.layout_cache.insert(
+                                                                            cache_key.clone(),
+                                                                            controls.clone(),
+                                                                        );
+                                                                        controls
+                                                                    }
+                                                                    Err(err) => {
+                                                                        eprintln!(
+                                                                            "Failed to fetch layout: {}",
+                                                                            err
+                                                                        );
+                                                                        Vec::new()
+                                                                    }
+                                                                }
+                                                            };
+
+                                                            let visible_fields = controls
+                                                                .into_iter()
+                                                                .filter_map(|(id, label)| {
+                                                                    item.fields
+                                                                        .get(&id)
+                                                                        .cloned()
+                                                                        .map(|value| (label, value))
+                                                                })
+                                                                .collect();
+                                                            edit_state.visible_fields = visible_fields;
+                                                        }
+                                                        app.detail_view_state.edit_state =
+                                                            Some(edit_state);
                                                     }
                                                 }
                                             }
@@ -614,14 +748,8 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                             app.detail_view_state.edit_state.as_mut()
                                         {
                                             if state.is_editing {
-                                                match state.active_field {
-                                                    DetailField::Title => state.title.push(c),
-                                                    DetailField::Description => {
-                                                        state.description.push(c)
-                                                    }
-                                                    DetailField::AcceptanceCriteria => {
-                                                        state.acceptance_criteria.push(c)
-                                                    }
+                                                if state.active_field == DetailField::Title {
+                                                    state.title.push(c)
                                                 }
                                                 app.last_key_press = None;
                                                 continue;
@@ -675,18 +803,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        state.active_field =
-                                                            match state.active_field {
-                                                                DetailField::Title => {
-                                                                    DetailField::Description
-                                                                }
-                                                                DetailField::Description => {
-                                                                    DetailField::AcceptanceCriteria
-                                                                }
-                                                                DetailField::AcceptanceCriteria => {
-                                                                    DetailField::Title
-                                                                }
-                                                            };
+                                                        // Tab switching is disabled when only title is editable
                                                     }
                                                 }
                                             }
@@ -695,18 +812,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        state.active_field =
-                                                            match state.active_field {
-                                                                DetailField::Title => {
-                                                                    DetailField::AcceptanceCriteria
-                                                                }
-                                                                DetailField::Description => {
-                                                                    DetailField::Title
-                                                                }
-                                                                DetailField::AcceptanceCriteria => {
-                                                                    DetailField::Description
-                                                                }
-                                                            };
+                                                        // Shift-Tab switching disabled for now
                                                     }
                                                 }
                                             }
@@ -748,12 +854,6 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             {
                                                                 current_item.title =
                                                                     state.title.clone();
-                                                                current_item.description =
-                                                                    state.description.clone();
-                                                                current_item.acceptance_criteria =
-                                                                    state
-                                                                        .acceptance_criteria
-                                                                        .clone();
                                                             }
                                                         }
                                                         state.is_editing = false;
@@ -765,16 +865,9 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        match state.active_field {
-                                                            DetailField::Title => {
-                                                                state.title.push(c)
-                                                            }
-                                                            DetailField::Description => {
-                                                                state.description.push(c)
-                                                            }
-                                                            DetailField::AcceptanceCriteria => {
-                                                                state.acceptance_criteria.push(c)
-                                                            }
+                                                        if state.active_field == DetailField::Title
+                                                        {
+                                                            state.title.push(c)
                                                         }
                                                     }
                                                 }
@@ -784,16 +877,9 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        match state.active_field {
-                                                            DetailField::Title => {
-                                                                state.title.clear()
-                                                            }
-                                                            DetailField::Description => {
-                                                                state.description.clear()
-                                                            }
-                                                            DetailField::AcceptanceCriteria => {
-                                                                state.acceptance_criteria.clear()
-                                                            }
+                                                        if state.active_field == DetailField::Title
+                                                        {
+                                                            state.title.clear()
                                                         }
                                                     }
                                                 }
@@ -803,16 +889,9 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.detail_view_state.edit_state.as_mut()
                                                 {
                                                     if state.is_editing {
-                                                        match state.active_field {
-                                                            DetailField::Title => {
-                                                                state.title.pop();
-                                                            }
-                                                            DetailField::Description => {
-                                                                state.description.pop();
-                                                            }
-                                                            DetailField::AcceptanceCriteria => {
-                                                                state.acceptance_criteria.pop();
-                                                            }
+                                                        if state.active_field == DetailField::Title
+                                                        {
+                                                            state.title.pop();
                                                         }
                                                     }
                                                 }
