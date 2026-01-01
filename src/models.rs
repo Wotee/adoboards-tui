@@ -23,12 +23,29 @@ pub enum DetailField {
 }
 
 lazy_static! {
-    /// Regex to strip common HTML tags (like <p>, <div>, <span>, <img>, etc.)
+    /// Regex to strip HTML tags; use replacement logic to preserve <img>
     static ref HTML_TAG_REGEX: Regex = Regex::new(r"<[^>]*>").unwrap();
 }
 
 pub fn clean_ado_text(input: &str) -> String {
     let decoded_text = decode_html_entities(input).to_string();
-    let stripped_text = HTML_TAG_REGEX.replace_all(&decoded_text, "").to_string();
+    let stripped_text = HTML_TAG_REGEX
+        .replace_all(&decoded_text, |caps: &regex::Captures| {
+            let tag = &caps[0];
+            let trimmed = tag
+                .trim_start_matches('<')
+                .trim_start_matches('/')
+                .split(|c| c == ' ' || c == '>' || c == '/')
+                .next()
+                .unwrap_or("");
+
+            if trimmed.eq_ignore_ascii_case("img") {
+                tag.to_string()
+            } else {
+                String::new()
+            }
+        })
+        .to_string();
+
     stripped_text.trim().to_string()
 }
