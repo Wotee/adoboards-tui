@@ -13,6 +13,8 @@ use azure_identity::AzureCliCredential;
 
 use crate::config::BoardConfig;
 use crate::models::{WorkItem, clean_ado_text};
+use crate::{cache::FieldMetaCacheKey, app::RefreshPolicy, cache::read_field_meta_cache, cache::write_field_meta_cache};
+use serde::{Deserialize, Serialize};
 
 fn authenticate_with_cli_credential() -> Result<Credential> {
     let azure_cli_credential = AzureCliCredential::new(None)?;
@@ -39,8 +41,8 @@ pub async fn resolve_iteration_id(
     let work_client = WorkClientBuilder::new(credential).build();
 
     // Fetch all iterations for the team and match by path or name
-    let iterations = work_client
-        .iterations_client()
+    let iterations_client = work_client.iterations_client();
+    let iterations = iterations_client
         .list(organization, project, team)
         .await?
         .value;
@@ -67,8 +69,8 @@ pub async fn get_iteration_ids(
 ) -> Result<Vec<i32>> {
     let credential = get_credential()?;
     let work_client = WorkClientBuilder::new(credential).build();
-    let iteration_work_items = work_client
-        .iterations_client()
+    let iterations_client = work_client.iterations_client();
+    let iteration_work_items = iterations_client
         .get_iteration_work_items(organization, project, iteration_id, team)
         .await?;
     let work_item_ids: Vec<i32> = iteration_work_items
@@ -87,8 +89,8 @@ pub async fn get_backlog_ids(organization: &str, project: &str, team: &str) -> R
     // Black magic string
     let backlog_level = "Microsoft.RequirementCategory";
 
-    let backlog_result = work_client
-        .backlogs_client()
+    let backlogs_client = work_client.backlogs_client();
+    let backlog_result = backlogs_client
         .get_backlog_level_work_items(organization, project, team, backlog_level)
         .await?;
 
@@ -117,8 +119,8 @@ pub async fn get_items(
 
     let wit_client = WitClientBuilder::new(credential).build();
 
-    let full_items = wit_client
-        .work_items_client()
+    let work_items_client = wit_client.work_items_client();
+    let full_items = work_items_client
         .list(organization, ids, project)
         .await?;
 
@@ -130,8 +132,8 @@ pub async fn fetch_project_id(organization: &str, project_name: &str) -> Result<
     let credential = get_credential()?;
     let core_client = CoreClientBuilder::new(credential).build();
 
-    let project = core_client
-        .projects_client()
+    let projects_client = core_client.projects_client();
+    let project = projects_client
         .get(organization, project_name)
         .await?
         .team_project_reference
@@ -145,8 +147,8 @@ pub async fn fetch_process_template_type(organization: &str, project_id: &str) -
     let credential = get_credential()?;
     let core_client = CoreClientBuilder::new(credential).build();
 
-    let properties = core_client
-        .projects_client()
+    let projects_client = core_client.projects_client();
+    let properties = projects_client
         .get_project_properties(organization, project_id)
         .keys("System.ProcessTemplateType")
         .await?;
@@ -169,8 +171,8 @@ pub async fn fetch_process_work_item_types(
     let credential = get_credential()?;
     let processes_client = ProcessesClientBuilder::new(credential).build();
 
-    let work_item_types = processes_client
-        .work_item_types_client()
+    let work_item_types_client = processes_client.work_item_types_client();
+    let work_item_types = work_item_types_client
         .list(organization, process_id)
         .await?
         .value;
@@ -195,14 +197,15 @@ pub async fn fetch_work_item_layout(
     let credential = get_credential()?;
     let processes_client = ProcessesClientBuilder::new(credential).build();
 
-    processes_client
-        .layout_client()
+    let layout_client = processes_client.layout_client();
+    let layout = layout_client
         .get(organization, process_id, wit_ref_name)
         .await
-        .context("Failed to fetch work item layout")
+        .context("Failed to fetch work item layout")?;
+    Ok(layout)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkItemFieldInfo {
     pub reference_name: String,
     pub allowed_values: Vec<String>,
@@ -216,8 +219,8 @@ pub async fn fetch_work_item_type_fields(
     let credential = get_credential()?;
     let wit_client = WitClientBuilder::new(credential).build();
 
-    let fields = wit_client
-        .work_item_types_field_client()
+    let work_item_types_field_client = wit_client.work_item_types_field_client();
+    let fields = work_item_types_field_client
         .list(organization, project, work_item_type_ref)
         .expand("allowedValues")
         .await?
@@ -248,11 +251,31 @@ pub async fn build_field_metadata_cache(
     organization: &str,
     project: &str,
     display_names: Vec<String>,
+    refresh_policy: RefreshPolicy,
 ) -> HashMap<String, Vec<WorkItemFieldInfo>> {
     let mut cache = HashMap::new();
     for display_name in display_names {
+        let cache_key = FieldMetaCacheKey {
+            organization: organization.to_string(),
+            project: project.to_string(),
+            work_item_type: display_name.clone(),
+        };
+
+        // Try cache unless full refresh requested
+        let cached = if matches!(refresh_policy, RefreshPolicy::Full) {
+            None
+        } else {
+            read_field_meta_cache(&cache_key)
+        };
+
+        if let Some(fields) = cached {
+            cache.insert(display_name.clone(), fields);
+            continue;
+        }
+
         match fetch_work_item_type_fields(organization, project, &display_name).await {
             Ok(fields) => {
+                let _ = write_field_meta_cache(&cache_key, &fields);
                 cache.insert(display_name.clone(), fields);
             }
             Err(err) => {

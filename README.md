@@ -91,6 +91,7 @@ Hotkeys are configurable. The default keys are:
 || `Enter` | Open selected item |
 | hover | `K` | Open "hover" showing more information |
 | refresh | `r` | Reload board |
+| full_refresh | `r` | Reload project information, layouts, and field information |
 | edit_config | `c` | Open configuration file with $EDITOR |
 | next_board | `>` | Next board |
 | previous_board | `<` | Previous board |

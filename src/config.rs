@@ -62,6 +62,7 @@ pub struct KeysConfig {
     pub jump_to_top: String,
     pub jump_to_end: String,
     pub refresh: String,
+    pub full_refresh: String,
     pub edit_config: String,
     pub edit_item: String,
 }
@@ -82,6 +83,7 @@ impl Default for KeysConfig {
             jump_to_top: "gg".to_string(),
             jump_to_end: "G".to_string(),
             refresh: "r".to_string(),
+            full_refresh: "R".to_string(),
             edit_config: "c".to_string(),
             edit_item: "e".to_string(),
         }
