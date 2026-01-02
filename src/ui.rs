@@ -80,6 +80,44 @@ fn calculate_type_filter_rect(
     })
 }
 
+fn calculate_detail_picker_rect(
+    frame_area: Rect,
+    field_area: Rect,
+    content_lines: u16,
+) -> Option<Rect> {
+    if frame_area.width < 3 || frame_area.height < 3 {
+        return None;
+    }
+    let popup_width = 45.min(frame_area.width.saturating_sub(2));
+    let desired_height = content_lines.saturating_add(2);
+    let popup_height = desired_height
+        .max(3)
+        .min(frame_area.height.saturating_sub(1));
+
+    let mut x = field_area.x.saturating_add(1);
+    let mut y = field_area.y.saturating_add(field_area.height);
+
+    if y + popup_height > frame_area.height {
+        y = field_area.y.saturating_sub(popup_height);
+    }
+    y = y.max(frame_area.y);
+
+    if x + popup_width > frame_area.width {
+        x = frame_area
+            .width
+            .saturating_sub(popup_width + 1)
+            .max(frame_area.x + 1);
+    }
+    x = x.max(frame_area.x + 1);
+
+    Some(Rect {
+        x,
+        y,
+        width: popup_width,
+        height: popup_height,
+    })
+}
+
 fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     if app.list_view_state.is_list_details_hover_visible {
         if let Some(item) = app.get_selected_item() {
@@ -152,6 +190,17 @@ fn draw_type_filter_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect
             "Type Filter",
             popup_rect,
         );
+    }
+}
+
+fn draw_detail_picker_popup(
+    f: &mut ratatui::Frame,
+    picker: &crate::app::PickerState,
+    field_area: Rect,
+) {
+    let content_height = picker.options.len().max(1) as u16;
+    if let Some(popup_rect) = calculate_detail_picker_rect(f.area(), field_area, content_height) {
+        draw_picker_popup(f, picker, "Select Value", popup_rect);
     }
 }
 
@@ -336,36 +385,18 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
                 Color::LightBlue
             }));
 
-        let mut lines = vec![Line::from(Span::raw(field.value.clone()))];
-        if is_editing && is_active {
-            if let Some(picker) = field.picker.as_ref() {
-                if !picker.options.is_empty() {
-                    let rendered = picker
-                        .options
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| {
-                            if Some(i) == picker.selected {
-                                Span::styled(
-                                    v.clone(),
-                                    Style::default()
-                                        .fg(Color::Cyan)
-                                        .add_modifier(Modifier::BOLD),
-                                )
-                            } else {
-                                Span::raw(v.clone())
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    lines.push(Line::from(rendered));
-                }
-            }
-        }
+        let lines = vec![Line::from(Span::raw(field.value.clone()))];
 
         let paragraph = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(block);
         f.render_widget(paragraph, *area);
+
+        if is_editing && is_active {
+            if let Some(picker) = field.picker.as_ref() {
+                draw_detail_picker_popup(f, picker, *area);
+            }
+        }
     }
 
     let status_line = match &app.detail_view_state.save_status {

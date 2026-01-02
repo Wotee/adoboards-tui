@@ -474,6 +474,40 @@ impl App {
         }
     }
 
+    fn active_picker(edit_state: &DetailEditState) -> Option<&PickerState> {
+        if let DetailField::Dynamic(idx) = edit_state.active_field {
+            edit_state
+                .visible_fields
+                .get(idx)
+                .and_then(|field| field.picker.as_ref())
+        } else {
+            None
+        }
+    }
+
+    fn active_picker_mut(edit_state: &mut DetailEditState) -> Option<&mut PickerState> {
+        if let DetailField::Dynamic(idx) = edit_state.active_field {
+            edit_state
+                .visible_fields
+                .get_mut(idx)
+                .and_then(|field| field.picker.as_mut())
+        } else {
+            None
+        }
+    }
+
+    fn apply_active_picker_selection(edit_state: &mut DetailEditState) {
+        if let DetailField::Dynamic(idx) = edit_state.active_field {
+            if let Some(field) = edit_state.visible_fields.get_mut(idx) {
+                if let Some(picker) = field.picker.as_mut() {
+                    if let Some(selected) = picker.selected {
+                        field.select_value(selected);
+                    }
+                }
+            }
+        }
+    }
+
     fn rebuild_edit_state_from_item(
         item: &WorkItem,
         existing_fields: &[VisibleField],
@@ -544,13 +578,34 @@ impl App {
                 DetailField::Title => state.title.push(c),
                 DetailField::Dynamic(idx) => {
                     if let Some(field) = state.visible_fields.get_mut(idx) {
-                        field.value.push(c);
-                        if let Some(picker) = field.picker.as_mut() {
-                            picker.selected = None;
+                        if field.picker.is_none() {
+                            field.value.push(c);
                         }
                     }
                 }
             }
+        }
+    }
+
+    fn move_active_picker(&mut self, direction: isize) {
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            if !state.is_editing {
+                return;
+            }
+            Self::clamp_active_field(state);
+            if let Some(picker) = App::active_picker_mut(state) {
+                picker.move_selection(direction);
+            }
+        }
+    }
+
+    fn select_active_picker_value(&mut self) {
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            if !state.is_editing {
+                return;
+            }
+            Self::clamp_active_field(state);
+            App::apply_active_picker_selection(state);
         }
     }
 
@@ -1036,6 +1091,26 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                             app.detail_view_state.edit_state.as_mut()
                                         {
                                             if state.is_editing {
+                                                App::clamp_active_field(state);
+                                                if App::active_picker(state).is_some() {
+                                                    let last_key = app.last_key_press;
+                                                    if key_matches_sequence(
+                                                        c,
+                                                        last_key,
+                                                        &app.keys.next,
+                                                    ) {
+                                                        app.move_active_picker(1);
+                                                    } else if key_matches_sequence(
+                                                        c,
+                                                        last_key,
+                                                        &app.keys.previous,
+                                                    ) {
+                                                        app.move_active_picker(-1);
+                                                    }
+                                                    app.last_key_press = Some(key.code);
+                                                    continue;
+                                                }
+
                                                 app.apply_typing(c);
                                                 app.last_key_press = None;
                                                 continue;
@@ -1122,76 +1197,13 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Up => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if let DetailField::Dynamic(idx) =
-                                                            state.active_field
-                                                        {
-                                                            if let Some(field) =
-                                                                state.visible_fields.get_mut(idx)
-                                                            {
-                                                                if let Some(picker) =
-                                                                    field.picker.as_mut()
-                                                                {
-                                                                    if !picker.options.is_empty() {
-                                                                        picker.move_selection(-1);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                                app.move_active_picker(-1);
                                             }
                                             KeyCode::Down => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if let DetailField::Dynamic(idx) =
-                                                            state.active_field
-                                                        {
-                                                            if let Some(field) =
-                                                                state.visible_fields.get_mut(idx)
-                                                            {
-                                                                if let Some(picker) =
-                                                                    field.picker.as_mut()
-                                                                {
-                                                                    if !picker.options.is_empty() {
-                                                                        picker.move_selection(1);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                                app.move_active_picker(1);
                                             }
                                             KeyCode::Enter => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        if let DetailField::Dynamic(idx) =
-                                                            state.active_field
-                                                        {
-                                                            if let Some(field) =
-                                                                state.visible_fields.get_mut(idx)
-                                                            {
-                                                                if let Some(picker) =
-                                                                    field.picker.as_mut()
-                                                                {
-                                                                    if let Some(selected) =
-                                                                        picker.selected
-                                                                    {
-                                                                        field
-                                                                            .select_value(selected);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                                app.select_active_picker_value();
                                                 app.start_save();
                                             }
 
@@ -1210,11 +1222,8 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .visible_fields
                                                                     .get_mut(idx)
                                                                 {
-                                                                    field.value.clear();
-                                                                    if let Some(picker) =
-                                                                        field.picker.as_mut()
-                                                                    {
-                                                                        picker.selected = None;
+                                                                    if field.picker.is_none() {
+                                                                        field.value.clear();
                                                                     }
                                                                 }
                                                             }
@@ -1237,11 +1246,8 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .visible_fields
                                                                     .get_mut(idx)
                                                                 {
-                                                                    field.value.pop();
-                                                                    if let Some(picker) =
-                                                                        field.picker.as_mut()
-                                                                    {
-                                                                        picker.selected = None;
+                                                                    if field.picker.is_none() {
+                                                                        field.value.pop();
                                                                     }
                                                                 }
                                                             }

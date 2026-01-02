@@ -205,7 +205,6 @@ pub async fn fetch_work_item_layout(
 #[derive(Clone, Debug)]
 pub struct WorkItemFieldInfo {
     pub reference_name: String,
-    pub name: String,
     pub allowed_values: Vec<String>,
 }
 
@@ -231,10 +230,8 @@ pub async fn fetch_work_item_type_fields(
                 .work_item_type_field_instance_base
                 .work_item_field_reference;
             let reference_name = base.reference_name?;
-            let name = base.name.unwrap_or_else(|| reference_name.clone());
             Some(WorkItemFieldInfo {
                 reference_name,
-                name,
                 allowed_values: f
                     .allowed_values
                     .into_iter()
