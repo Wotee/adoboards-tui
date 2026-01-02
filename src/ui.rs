@@ -100,19 +100,20 @@ fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
     }
 }
 
-fn draw_type_filter_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
-    if !app.list_view_state.is_type_filter_open {
-        return;
-    }
-
+fn draw_picker_popup(
+    f: &mut ratatui::Frame,
+    picker: &crate::app::PickerState,
+    title: &str,
+    rect: Rect,
+) {
     let mut content_lines: Vec<Line> = Vec::new();
 
-    if app.list_view_state.available_types.is_empty() {
-        content_lines.push(Line::from("No types"));
+    if picker.options.is_empty() {
+        content_lines.push(Line::from("No options"));
     } else {
-        for (idx, t) in app.list_view_state.available_types.iter().enumerate() {
-            let is_selected = Some(idx) == app.list_view_state.type_filter_selection;
-            let is_active = app.list_view_state.active_type_filters.contains(t);
+        for (idx, t) in picker.options.iter().enumerate() {
+            let is_selected = Some(idx) == picker.selected;
+            let is_active = picker.active.contains(t);
             let indicator = if is_active { "[x]" } else { "[ ]" };
             let line = if is_selected {
                 Line::from(Span::styled(
@@ -128,16 +129,29 @@ fn draw_type_filter_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect
         }
     }
 
-    let content_height = content_lines.len() as u16;
+    f.render_widget(Clear, rect);
+
+    let popup_block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::LightBlue));
+    f.render_widget(Paragraph::new(content_lines).block(popup_block), rect);
+}
+
+fn draw_type_filter_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
+    if !app.list_view_state.type_picker.is_open {
+        return;
+    }
+
+    let content_height = app.list_view_state.type_picker.options.len().max(1) as u16;
 
     if let Some(popup_rect) = calculate_type_filter_rect(f.area(), app, list_area, content_height) {
-        f.render_widget(Clear, popup_rect);
-
-        let popup_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Type Filter")
-            .border_style(Style::default().fg(Color::LightBlue));
-        f.render_widget(Paragraph::new(content_lines).block(popup_block), popup_rect);
+        draw_picker_popup(
+            f,
+            &app.list_view_state.type_picker,
+            "Type Filter",
+            popup_rect,
+        );
     }
 }
 
@@ -172,12 +186,13 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
             .collect()
     };
 
-    let type_filter_label = if app.list_view_state.active_type_filters.is_empty() {
+    let type_filter_label = if app.list_view_state.type_picker.active.is_empty() {
         "".to_string()
     } else {
         let joined = app
             .list_view_state
-            .active_type_filters
+            .type_picker
+            .active
             .iter()
             .cloned()
             .collect::<Vec<_>>()
@@ -323,13 +338,14 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
 
         let mut lines = vec![Line::from(Span::raw(field.value.clone()))];
         if is_editing && is_active {
-            if let Some(options) = field.allowed_values.as_ref() {
-                if !options.is_empty() {
-                    let rendered = options
+            if let Some(picker) = field.picker.as_ref() {
+                if !picker.options.is_empty() {
+                    let rendered = picker
+                        .options
                         .iter()
                         .enumerate()
                         .map(|(i, v)| {
-                            if Some(i) == field.selected_index {
+                            if Some(i) == picker.selected {
                                 Span::styled(
                                     v.clone(),
                                     Style::default()

@@ -23,16 +23,89 @@ pub enum LoadingState {
     Error(String),
 }
 
+#[derive(Clone, Default)]
+pub struct PickerState {
+    pub is_open: bool,
+    pub options: Vec<String>,
+    pub selected: Option<usize>,
+    pub active: BTreeSet<String>,
+}
+
+impl PickerState {
+    pub fn from_options(options: Vec<String>) -> Self {
+        let mut state = Self::default();
+        state.set_options(options);
+        state
+    }
+
+    pub fn set_options<I: IntoIterator<Item = String>>(&mut self, options: I) {
+        let unique: BTreeSet<String> = options.into_iter().collect();
+        self.options = unique.into_iter().collect();
+        self.clamp_selection();
+    }
+
+    pub fn toggle_open(&mut self) {
+        self.is_open = !self.is_open;
+        if self.is_open {
+            self.clamp_selection();
+        } else {
+            self.selected = None;
+        }
+    }
+
+    pub fn close(&mut self) {
+        self.is_open = false;
+        self.selected = None;
+    }
+
+    pub fn move_selection(&mut self, direction: isize) {
+        if self.options.is_empty() {
+            self.selected = None;
+            return;
+        }
+        let current = self.selected.unwrap_or(0) as isize;
+        let next = (current + direction).clamp(0, self.options.len() as isize - 1);
+        self.selected = Some(next as usize);
+    }
+
+    pub fn toggle_active(&mut self) {
+        if let Some(idx) = self.selected {
+            if let Some(value) = self.options.get(idx).cloned() {
+                if self.active.contains(&value) {
+                    self.active.remove(&value);
+                } else {
+                    self.active.insert(value);
+                }
+            }
+        }
+    }
+
+    pub fn clear_active(&mut self) {
+        self.active.clear();
+    }
+
+    pub fn set_selected_to_value(&mut self, value: &str) {
+        self.selected = self.options.iter().position(|v| v == value);
+    }
+
+    fn clamp_selection(&mut self) {
+        if self.options.is_empty() {
+            self.selected = None;
+            return;
+        }
+        let max_idx = self.options.len() - 1;
+        let selection = self.selected.unwrap_or(0).min(max_idx);
+        self.selected = Some(selection);
+    }
+}
+
 pub struct ListViewState {
     pub list_state: ListState,
     pub filter_query: String,
     pub is_filtering: bool,
     pub is_list_details_hover_visible: bool,
     pub assigned_to_me_filter_on: bool,
-    pub is_type_filter_open: bool,
-    pub active_type_filters: BTreeSet<String>,
-    pub available_types: BTreeSet<String>,
-    pub type_filter_selection: Option<usize>,
+    pub type_picker: PickerState,
 }
 
 impl ListViewState {
@@ -43,10 +116,7 @@ impl ListViewState {
             is_filtering: false,
             is_list_details_hover_visible: false,
             assigned_to_me_filter_on: false,
-            is_type_filter_open: false,
-            active_type_filters: BTreeSet::new(),
-            available_types: BTreeSet::new(),
-            type_filter_selection: None,
+            type_picker: PickerState::default(),
         }
     }
 }
@@ -62,8 +132,7 @@ pub struct VisibleField {
     pub label: String,
     pub reference: String,
     pub value: String,
-    pub allowed_values: Option<Vec<String>>,
-    pub selected_index: Option<usize>,
+    pub picker: Option<PickerState>,
 }
 
 impl VisibleField {
@@ -73,23 +142,23 @@ impl VisibleField {
         value: String,
         allowed_values: Option<Vec<String>>,
     ) -> Self {
-        let selected_index = allowed_values
-            .as_ref()
-            .and_then(|vals| vals.iter().position(|v| v == &value));
+        let mut picker = allowed_values.map(PickerState::from_options);
+        if let Some(ref mut p) = picker {
+            p.set_selected_to_value(&value);
+        }
         Self {
             label,
             reference,
             value,
-            allowed_values,
-            selected_index,
+            picker,
         }
     }
 
     fn select_value(&mut self, idx: usize) {
-        if let Some(values) = self.allowed_values.as_ref() {
-            if let Some(choice) = values.get(idx) {
-                self.value = choice.clone();
-                self.selected_index = Some(idx);
+        if let Some(picker) = self.picker.as_mut() {
+            if let Some(choice) = picker.options.get(idx).cloned() {
+                self.value = choice;
+                picker.selected = Some(idx);
             }
         }
     }
@@ -233,11 +302,12 @@ impl App {
         if !items.is_empty() {
             list_state.select(Some(0));
         }
-        self.list_view_state.available_types =
-            items.iter().map(|i| i.work_item_type.clone()).collect();
+        self.list_view_state
+            .type_picker
+            .set_options(items.iter().map(|i| i.work_item_type.clone()));
         self.items = items;
         self.list_view_state.list_state = list_state;
-        self.list_view_state.type_filter_selection = None;
+        self.list_view_state.type_picker.selected = None;
         self.loading_state = LoadingState::Loaded;
     }
 
@@ -255,67 +325,32 @@ impl App {
     }
 
     pub fn toggle_type_filter_menu(&mut self) {
-        self.list_view_state.is_type_filter_open = !self.list_view_state.is_type_filter_open;
-        if self.list_view_state.is_type_filter_open {
-            let available_len = self.list_view_state.available_types.len();
-            self.list_view_state.type_filter_selection =
-                if available_len > 0 { Some(0) } else { None };
+        self.list_view_state.type_picker.toggle_open();
+        if self.list_view_state.type_picker.is_open {
             self.list_view_state.is_list_details_hover_visible = false;
-        } else {
-            self.list_view_state.type_filter_selection = None;
         }
     }
 
     pub fn toggle_type_selection(&mut self) {
-        if !self.list_view_state.is_type_filter_open {
+        if !self.list_view_state.type_picker.is_open {
             return;
         }
 
-        if let Some(selected_index) = self.list_view_state.type_filter_selection {
-            if let Some(selected_type) = self
-                .list_view_state
-                .available_types
-                .iter()
-                .nth(selected_index)
-                .cloned()
-            {
-                if self
-                    .list_view_state
-                    .active_type_filters
-                    .contains(&selected_type)
-                {
-                    self.list_view_state
-                        .active_type_filters
-                        .remove(&selected_type);
-                } else {
-                    self.list_view_state
-                        .active_type_filters
-                        .insert(selected_type);
-                }
-                self.clamp_selection();
-            }
-        }
+        self.list_view_state.type_picker.toggle_active();
+        self.clamp_selection();
     }
 
     pub fn clear_type_filters(&mut self) {
-        self.list_view_state.active_type_filters.clear();
+        self.list_view_state.type_picker.clear_active();
         self.clamp_selection();
     }
 
     pub fn move_type_selection(&mut self, direction: isize) {
-        if !self.list_view_state.is_type_filter_open {
+        if !self.list_view_state.type_picker.is_open {
             return;
         }
 
-        let len = self.list_view_state.available_types.len();
-        if len == 0 {
-            self.list_view_state.type_filter_selection = None;
-            return;
-        }
-
-        let current = self.list_view_state.type_filter_selection.unwrap_or(0) as isize;
-        let next = (current + direction).clamp(0, len as isize - 1);
-        self.list_view_state.type_filter_selection = Some(next as usize);
+        self.list_view_state.type_picker.move_selection(direction);
     }
 
     pub fn open_item(&mut self) {
@@ -385,10 +420,11 @@ impl App {
                     }
                 }
 
-                if !self.list_view_state.active_type_filters.is_empty()
+                if !self.list_view_state.type_picker.active.is_empty()
                     && !self
                         .list_view_state
-                        .active_type_filters
+                        .type_picker
+                        .active
                         .contains(&item.work_item_type)
                 {
                     return false;
@@ -451,11 +487,12 @@ impl App {
                     .get(&field.reference)
                     .cloned()
                     .unwrap_or_default();
+                let allowed_values = field.picker.as_ref().map(|picker| picker.options.clone());
                 VisibleField::with_value(
                     field.label.clone(),
                     field.reference.clone(),
                     value,
-                    field.allowed_values.clone(),
+                    allowed_values,
                 )
             })
             .collect();
@@ -508,7 +545,9 @@ impl App {
                 DetailField::Dynamic(idx) => {
                     if let Some(field) = state.visible_fields.get_mut(idx) {
                         field.value.push(c);
-                        field.selected_index = None;
+                        if let Some(picker) = field.picker.as_mut() {
+                            picker.selected = None;
+                        }
                     }
                 }
             }
@@ -711,16 +750,14 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                 }
                                 _ => {}
                             }
-                        } else if app.list_view_state.is_type_filter_open {
+                        } else if app.list_view_state.type_picker.is_open {
                             match key.code {
                                 KeyCode::Esc => {
-                                    app.list_view_state.is_type_filter_open = false;
-                                    app.list_view_state.type_filter_selection = None;
+                                    app.list_view_state.type_picker.close();
                                 }
                                 KeyCode::Char('c') => {
                                     app.clear_type_filters();
-                                    app.list_view_state.is_type_filter_open = false;
-                                    app.list_view_state.type_filter_selection = None;
+                                    app.list_view_state.type_picker.close();
                                 }
                                 KeyCode::Enter | KeyCode::Char(' ') => {
                                     app.toggle_type_selection();
@@ -734,8 +771,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                 KeyCode::Char(c) => {
                                     let last_key = app.last_key_press;
                                     if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                        app.list_view_state.is_type_filter_open = false;
-                                        app.list_view_state.type_filter_selection = None;
+                                        app.list_view_state.type_picker.close();
                                         app.last_key_press = None;
                                     } else if key_matches_sequence(c, last_key, &app.keys.next) {
                                         app.move_type_selection(1);
@@ -922,25 +958,25 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                 .into_iter()
                                                                 .filter_map(|(id, label)| {
                                                                     item.fields
-                                                                        .get(&id)
-                                                                        .cloned()
-                                                                        .map(|value| {
-                                                                            let allowed_values = app
-                                                                                .field_meta_cache
-                                                                                .get(&item.work_item_type)
-                                                                                .and_then(|fields| {
-                                                                                    fields
-                                                                                        .iter()
-                                                                                        .find(|f| f.reference_name == id)
-                                                                                        .map(|f| f.allowed_values.clone())
-                                                                                });
-                                                                            VisibleField::with_value(
-                                                                                label,
-                                                                                id,
-                                                                                value,
-                                                                                allowed_values,
-                                                                            )
-                                                                        })
+                                                .get(&id)
+                                                .cloned()
+                                                .map(|value| {
+                                                    let allowed_values = app
+                                                        .field_meta_cache
+                                                        .get(&item.work_item_type)
+                                                        .and_then(|fields| {
+                                                            fields
+                                                                .iter()
+                                                                .find(|f| f.reference_name == id)
+                                                                .map(|f| f.allowed_values.clone())
+                                                        });
+                                                    VisibleField::with_value(
+                                                        label,
+                                                        id,
+                                                        value,
+                                                        allowed_values,
+                                                    )
+                                                })
                                                                 })
                                                                 .collect();
                                                             edit_state.visible_fields =
@@ -964,10 +1000,11 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                     app.list_view_state.filter_query.clear();
                                                     app.clamp_selection();
                                                 }
-                                                if app.list_view_state.is_type_filter_open {
+                                                if app.list_view_state.type_picker.is_open {
                                                     app.toggle_type_filter_menu();
                                                 }
                                             }
+
                                             KeyCode::Up => {
                                                 app.list_view_state.is_list_details_hover_visible =
                                                     false;
@@ -1095,22 +1132,11 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             if let Some(field) =
                                                                 state.visible_fields.get_mut(idx)
                                                             {
-                                                                if let Some(options) =
-                                                                    field.allowed_values.as_ref()
+                                                                if let Some(picker) =
+                                                                    field.picker.as_mut()
                                                                 {
-                                                                    if !options.is_empty() {
-                                                                        let next_index = match field
-                                                                            .selected_index
-                                                                        {
-                                                                            Some(current)
-                                                                                if current > 0 =>
-                                                                            {
-                                                                                current - 1
-                                                                            }
-                                                                            _ => options.len() - 1,
-                                                                        };
-                                                                        field.selected_index =
-                                                                            Some(next_index);
+                                                                    if !picker.options.is_empty() {
+                                                                        picker.move_selection(-1);
                                                                     }
                                                                 }
                                                             }
@@ -1129,21 +1155,11 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             if let Some(field) =
                                                                 state.visible_fields.get_mut(idx)
                                                             {
-                                                                if let Some(options) =
-                                                                    field.allowed_values.as_ref()
+                                                                if let Some(picker) =
+                                                                    field.picker.as_mut()
                                                                 {
-                                                                    if !options.is_empty() {
-                                                                        let next_index = match field
-                                                                            .selected_index
-                                                                        {
-                                                                            Some(current) => {
-                                                                                (current + 1)
-                                                                                    % options.len()
-                                                                            }
-                                                                            None => 0,
-                                                                        };
-                                                                        field.selected_index =
-                                                                            Some(next_index);
+                                                                    if !picker.options.is_empty() {
+                                                                        picker.move_selection(1);
                                                                     }
                                                                 }
                                                             }
@@ -1162,16 +1178,14 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             if let Some(field) =
                                                                 state.visible_fields.get_mut(idx)
                                                             {
-                                                                if let Some(options) =
-                                                                    field.allowed_values.as_ref()
+                                                                if let Some(picker) =
+                                                                    field.picker.as_mut()
                                                                 {
-                                                                    if !options.is_empty() {
-                                                                        let next_index = field
-                                                                            .selected_index
-                                                                            .unwrap_or(0);
-                                                                        field.select_value(
-                                                                            next_index,
-                                                                        );
+                                                                    if let Some(selected) =
+                                                                        picker.selected
+                                                                    {
+                                                                        field
+                                                                            .select_value(selected);
                                                                     }
                                                                 }
                                                             }
@@ -1180,6 +1194,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                                 app.start_save();
                                             }
+
                                             KeyCode::Delete => {
                                                 if let Some(state) =
                                                     app.detail_view_state.edit_state.as_mut()
@@ -1196,7 +1211,11 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .get_mut(idx)
                                                                 {
                                                                     field.value.clear();
-                                                                    field.selected_index = None;
+                                                                    if let Some(picker) =
+                                                                        field.picker.as_mut()
+                                                                    {
+                                                                        picker.selected = None;
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -1219,7 +1238,11 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                     .get_mut(idx)
                                                                 {
                                                                     field.value.pop();
-                                                                    field.selected_index = None;
+                                                                    if let Some(picker) =
+                                                                        field.picker.as_mut()
+                                                                    {
+                                                                        picker.selected = None;
+                                                                    }
                                                                 }
                                                             }
                                                         }
