@@ -219,12 +219,10 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     let items_to_display = app.get_filtered_items();
 
     let list_items: Vec<ListItem> = if items_to_display.is_empty() {
-        vec![
-            ListItem::new(Line::from(
-                "No items match filters — press c in type filter to clear",
-            ))
-            .style(Style::default().fg(Color::DarkGray)),
-        ]
+        vec![ListItem::new(Line::from(
+            "No items match filters — press c in type filter to clear",
+        ))
+        .style(Style::default().fg(Color::DarkGray))]
     } else {
         items_to_display
             .iter()
@@ -357,7 +355,17 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
     }
     let constraints: Vec<Constraint> = fields_to_render
         .iter()
-        .map(|_| Constraint::Min(3))
+        .map(|field| {
+            if field
+                .picker
+                .as_ref()
+                .is_some_and(|picker| !picker.options.is_empty())
+            {
+                Constraint::Length(3)
+            } else {
+                Constraint::Min(3)
+            }
+        })
         .collect();
     let field_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -386,10 +394,17 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
             }));
 
         let lines = vec![Line::from(Span::raw(field.value.clone()))];
+        let wrap = if field
+            .picker
+            .as_ref()
+            .is_some_and(|picker| !picker.options.is_empty())
+        {
+            Wrap { trim: true }
+        } else {
+            Wrap { trim: false }
+        };
 
-        let paragraph = Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(block);
+        let paragraph = Paragraph::new(lines).wrap(wrap).block(block);
         f.render_widget(paragraph, *area);
 
         if is_editing && is_active {
