@@ -149,7 +149,13 @@ impl VisibleField {
         value: String,
         allowed_values: Option<Vec<String>>,
     ) -> Self {
-        let mut picker = allowed_values.map(PickerState::from_options);
+        let mut picker = allowed_values.and_then(|values| {
+            if values.is_empty() {
+                None
+            } else {
+                Some(PickerState::from_options(values))
+            }
+        });
         if let Some(ref mut p) = picker {
             p.set_selected_to_value(&value);
         }
@@ -587,7 +593,12 @@ impl App {
                 DetailField::Title => state.title.push(c),
                 DetailField::Dynamic(idx) => {
                     if let Some(field) = state.visible_fields.get_mut(idx) {
-                        if field.picker.is_none() {
+                        let picker_has_options = field
+                            .picker
+                            .as_ref()
+                            .map(|p| !p.options.is_empty())
+                            .unwrap_or(false);
+                        if !picker_has_options {
                             field.value.push(c);
                         }
                     }
@@ -1308,54 +1319,65 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                 app.start_save();
                                             }
 
-                                            KeyCode::Delete => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        App::clamp_active_field(state);
-                                                        match state.active_field {
-                                                            DetailField::Title => {
-                                                                state.title.clear()
-                                                            }
-                                                            DetailField::Dynamic(idx) => {
-                                                                if let Some(field) = state
-                                                                    .visible_fields
-                                                                    .get_mut(idx)
-                                                                {
-                                                                    if field.picker.is_none() {
-                                                                        field.value.clear();
+                                                KeyCode::Delete => {
+                                                    if let Some(state) =
+                                                        app.detail_view_state.edit_state.as_mut()
+                                                    {
+                                                        if state.is_editing {
+                                                            App::clamp_active_field(state);
+                                                            match state.active_field {
+                                                                DetailField::Title => {
+                                                                    state.title.clear()
+                                                                }
+                                                                DetailField::Dynamic(idx) => {
+                                                                    if let Some(field) = state
+                                                                        .visible_fields
+                                                                        .get_mut(idx)
+                                                                    {
+                                                                        let picker_has_options = field
+                                                                            .picker
+                                                                            .as_ref()
+                                                                            .map(|p| !p.options.is_empty())
+                                                                            .unwrap_or(false);
+                                                                        if !picker_has_options {
+                                                                            field.value.clear();
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
-                                            KeyCode::Backspace => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        App::clamp_active_field(state);
-                                                        match state.active_field {
-                                                            DetailField::Title => {
-                                                                state.title.pop();
-                                                            }
-                                                            DetailField::Dynamic(idx) => {
-                                                                if let Some(field) = state
-                                                                    .visible_fields
-                                                                    .get_mut(idx)
-                                                                {
-                                                                    if field.picker.is_none() {
-                                                                        field.value.pop();
+                                                KeyCode::Backspace => {
+                                                    if let Some(state) =
+                                                        app.detail_view_state.edit_state.as_mut()
+                                                    {
+                                                        if state.is_editing {
+                                                            App::clamp_active_field(state);
+                                                            match state.active_field {
+                                                                DetailField::Title => {
+                                                                    state.title.pop();
+                                                                }
+                                                                DetailField::Dynamic(idx) => {
+                                                                    if let Some(field) = state
+                                                                        .visible_fields
+                                                                        .get_mut(idx)
+                                                                    {
+                                                                        let picker_has_options = field
+                                                                            .picker
+                                                                            .as_ref()
+                                                                            .map(|p| !p.options.is_empty())
+                                                                            .unwrap_or(false);
+                                                                        if !picker_has_options {
+                                                                            field.value.pop();
+                                                                        }
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }
                                                 }
-                                            }
+
                                             _ => {}
                                         }
                                         app.last_key_press = None;
