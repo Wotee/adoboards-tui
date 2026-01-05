@@ -197,10 +197,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 layout_pairs.push((display.clone(), reference.clone()));
                             }
                         }
-                         }
+                    }
 
+                    // If we already have work item types, fill layout_pairs without extra API calls
+                    if layout_pairs.is_empty() && !missing_layout_displays.is_empty() {
+                        for display in &missing_layout_displays {
+                            if let Some(reference) = app.work_item_types.get(display) {
+                                layout_pairs.push((display.clone(), reference.clone()));
+                            }
+                        }
+                    }
 
                     // 4) Kick off layout and field metadata fetches
+
                     let organization = source.organization.clone();
                     let project = source.project.clone();
                     let fields_organization = organization.clone();

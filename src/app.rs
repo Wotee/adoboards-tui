@@ -760,7 +760,12 @@ pub async fn prefetch_layouts(
             project.to_string(),
             display_name.clone(),
         );
-        let layout_key = LayoutCacheKey {
+        let layout_key_ref = LayoutCacheKey {
+            organization: organization.to_string(),
+            project: project.to_string(),
+            work_item_type: reference_name.clone(),
+        };
+        let layout_key_display = LayoutCacheKey {
             organization: organization.to_string(),
             project: project.to_string(),
             work_item_type: display_name.clone(),
@@ -768,7 +773,7 @@ pub async fn prefetch_layouts(
         let cached = if matches!(refresh_policy, RefreshPolicy::Full) {
             None
         } else {
-            read_layout_cache(&layout_key)
+            read_layout_cache(&layout_key_ref).or_else(|| read_layout_cache(&layout_key_display))
         };
         if let Some(controls) = cached {
             eprintln!(
@@ -780,7 +785,7 @@ pub async fn prefetch_layouts(
         }
         match fetch_visible_controls(organization, process_id, &reference_name).await {
             Ok(controls) => {
-                let _ = write_layout_cache(&layout_key, &controls);
+                let _ = write_layout_cache(&layout_key_ref, &controls);
                 cache.insert(key, controls);
             }
             Err(err) => {
@@ -1031,7 +1036,12 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                 project.clone(),
                                                                 item.work_item_type.clone(),
                                                             );
-                                                            let layout_key = LayoutCacheKey {
+                                                            let layout_key_ref = LayoutCacheKey {
+                                                                organization: organization.clone(),
+                                                                project: project.clone(),
+                                                                work_item_type: reference.clone(),
+                                                            };
+                                                            let layout_key_display = LayoutCacheKey {
                                                                 organization: organization.clone(),
                                                                 project: project.clone(),
                                                                 work_item_type: item
@@ -1049,7 +1059,12 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             {
                                                                 Some(cached.clone())
                                                             } else if let Some(disk) =
-                                                                read_layout_cache(&layout_key)
+                                                                read_layout_cache(&layout_key_ref)
+                                                                    .or_else(|| {
+                                                                        read_layout_cache(
+                                                                            &layout_key_display,
+                                                                        )
+                                                                    })
                                                             {
                                                                 app.layout_cache.insert(
                                                                     cache_key.clone(),
@@ -1074,7 +1089,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                 {
                                                                     Ok(controls) => {
                                                                         let _ = write_layout_cache(
-                                                                            &layout_key,
+                                                                            &layout_key_ref,
                                                                             &controls,
                                                                         );
                                                                         app.layout_cache.insert(
@@ -1098,6 +1113,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                                 .filter_map(|(id, label)| {
                                                                     item.fields
                                                  .get(&id)
+
                                                  .cloned()
                                                  .map(|value| {
                                                      let allowed_values = app
