@@ -142,17 +142,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             source.project.clone(),
                             display.clone(),
                         );
-                        let layout_key = LayoutCacheKey {
+                        let layout_key_display = LayoutCacheKey {
                             organization: source.organization.clone(),
                             project: source.project.clone(),
                             work_item_type: display.clone(),
                         };
+                        let layout_key_ref = app.work_item_types.get(display).map(|reference| {
+                            LayoutCacheKey {
+                                organization: source.organization.clone(),
+                                project: source.project.clone(),
+                                work_item_type: reference.clone(),
+                            }
+                        });
                         let in_memory = app.layout_cache.get(&cache_key).is_some();
-                        let on_disk = if matches!(refresh_policy, RefreshPolicy::Full) {
+                        let on_disk_display = if matches!(refresh_policy, RefreshPolicy::Full) {
                             None
                         } else {
-                            read_layout_cache(&layout_key)
+                            read_layout_cache(&layout_key_display)
                         };
+                        let on_disk = if let Some(disk) = on_disk_display {
+                            Some(disk)
+                        } else if !matches!(refresh_policy, RefreshPolicy::Full) {
+                            layout_key_ref
+                                .as_ref()
+                                .and_then(|ref_key| read_layout_cache(ref_key))
+                        } else {
+                            None
+                        };
+
                         if matches!(refresh_policy, RefreshPolicy::Full)
                             || (!in_memory && on_disk.is_none())
                         {
@@ -214,6 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let project = source.project.clone();
                     let fields_organization = organization.clone();
                     let fields_project = project.clone();
+
                     let layout_refresh_policy = refresh_policy.clone();
                     let fields_refresh_policy = refresh_policy.clone();
                     let missing_field_meta = metadata_display_names
