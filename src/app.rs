@@ -1019,124 +1019,123 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                             .cloned();
                                                         let mut edit_state =
                                                             DetailEditState::new_from_item(&item);
-                                                        if let (Some(process_id), Some(reference)) = (
-                                                            app.process_template_type.clone(),
-                                                            reference_name,
-                                                        ) {
-                                                            let organization = app
-                                                                .current_source()
-                                                                .organization
-                                                                .clone();
-                                                            let project = app
-                                                                .current_source()
-                                                                .project
-                                                                .clone();
-                                                            let cache_key = (
-                                                                organization.clone(),
-                                                                project.clone(),
-                                                                item.work_item_type.clone(),
-                                                            );
-                                                            let layout_key_ref = LayoutCacheKey {
+
+                                                        let organization = app
+                                                            .current_source()
+                                                            .organization
+                                                            .clone();
+                                                        let project = app.current_source().project.clone();
+                                                        let cache_key = (
+                                                            organization.clone(),
+                                                            project.clone(),
+                                                            item.work_item_type.clone(),
+                                                        );
+                                                        let layout_key_display = LayoutCacheKey {
+                                                            organization: organization.clone(),
+                                                            project: project.clone(),
+                                                            work_item_type: item.work_item_type.clone(),
+                                                        };
+                                                        let layout_key_ref = reference_name.as_ref().map(|reference| {
+                                                            LayoutCacheKey {
                                                                 organization: organization.clone(),
                                                                 project: project.clone(),
                                                                 work_item_type: reference.clone(),
-                                                            };
-                                                            let layout_key_display = LayoutCacheKey {
-                                                                organization: organization.clone(),
-                                                                project: project.clone(),
-                                                                work_item_type: item
-                                                                    .work_item_type
-                                                                    .clone(),
-                                                            };
+                                                            }
+                                                        });
 
-                                                            let cached_controls = if app
-                                                                .refresh_policy
-                                                                == RefreshPolicy::Full
+                                                        let cached_controls = if app.refresh_policy
+                                                            == RefreshPolicy::Full
+                                                        {
+                                                            None
+                                                        } else if let Some(cached) =
+                                                            app.layout_cache.get(&cache_key)
+                                                        {
+                                                            Some(cached.clone())
+                                                        } else if let Some(disk) = read_layout_cache(
+                                                            &layout_key_display,
+                                                        )
+                                                        .or_else(|| {
+                                                            layout_key_ref
+                                                                .as_ref()
+                                                                .and_then(|ref_key| read_layout_cache(ref_key))
+                                                        }) {
+                                                            app.layout_cache
+                                                                .insert(cache_key.clone(), disk.clone());
+                                                            Some(disk)
+                                                        } else {
+                                                            None
+                                                        };
+
+                                                        let controls = if let Some(cached) =
+                                                            cached_controls
+                                                        {
+                                                            cached
+                                                        } else if let (Some(process_id), Some(reference)) = (
+                                                            app.process_template_type.clone(),
+                                                            reference_name.clone(),
+                                                        ) {
+                                                            match fetch_visible_controls(
+                                                                &organization,
+                                                                &process_id,
+                                                                &reference,
+                                                            )
+                                                            .await
                                                             {
-                                                                None
-                                                            } else if let Some(cached) =
-                                                                app.layout_cache.get(&cache_key)
-                                                            {
-                                                                Some(cached.clone())
-                                                            } else if let Some(disk) =
-                                                                read_layout_cache(&layout_key_ref)
-                                                                    .or_else(|| {
-                                                                        read_layout_cache(
-                                                                            &layout_key_display,
+                                                                Ok(controls) => {
+                                                                    if let Some(ref_key) =
+                                                                        layout_key_ref.as_ref()
+                                                                    {
+                                                                        let _ =
+                                                                            write_layout_cache(ref_key, &controls);
+                                                                    }
+                                                                    let _ = write_layout_cache(
+                                                                        &layout_key_display,
+                                                                        &controls,
+                                                                    );
+                                                                    app.layout_cache.insert(
+                                                                        cache_key.clone(),
+                                                                        controls.clone(),
+                                                                    );
+                                                                    controls
+                                                                }
+                                                                Err(err) => {
+                                                                    eprintln!(
+                                                                        "Failed to fetch layout: {}",
+                                                                        err
+                                                                    );
+                                                                    Vec::new()
+                                                                }
+                                                            }
+                                                        } else {
+                                                            Vec::new()
+                                                        };
+
+                                                        let visible_fields = controls
+                                                            .into_iter()
+                                                            .filter_map(|(id, label)| {
+                                                                item.fields
+                                                                    .get(&id)
+                                                                    .cloned()
+                                                                    .map(|value| {
+                                                                        let allowed_values = app
+                                                                            .field_meta_cache
+                                                                            .get(&item.work_item_type)
+                                                                            .and_then(|fields| {
+                                                                                fields
+                                                                                    .iter()
+                                                                                    .find(|f| f.reference_name == id)
+                                                                                    .map(|f| f.allowed_values.clone())
+                                                                            });
+                                                                        VisibleField::with_value(
+                                                                            label,
+                                                                            id,
+                                                                            value,
+                                                                            allowed_values,
                                                                         )
                                                                     })
-                                                            {
-                                                                app.layout_cache.insert(
-                                                                    cache_key.clone(),
-                                                                    disk.clone(),
-                                                                );
-                                                                Some(disk)
-                                                            } else {
-                                                                None
-                                                            };
-
-                                                            let controls = if let Some(cached) =
-                                                                cached_controls
-                                                            {
-                                                                cached
-                                                            } else {
-                                                                match fetch_visible_controls(
-                                                                    &organization,
-                                                                    &process_id,
-                                                                    &reference,
-                                                                )
-                                                                .await
-                                                                {
-                                                                    Ok(controls) => {
-                                                                        let _ = write_layout_cache(
-                                                                            &layout_key_ref,
-                                                                            &controls,
-                                                                        );
-                                                                        app.layout_cache.insert(
-                                                                            cache_key.clone(),
-                                                                            controls.clone(),
-                                                                        );
-                                                                        controls
-                                                                    }
-                                                                    Err(err) => {
-                                                                        eprintln!(
-                                                                            "Failed to fetch layout: {}",
-                                                                            err
-                                                                        );
-                                                                        Vec::new()
-                                                                    }
-                                                                }
-                                                            };
-
-                                                            let visible_fields = controls
-                                                                .into_iter()
-                                                                .filter_map(|(id, label)| {
-                                                                    item.fields
-                                                 .get(&id)
-
-                                                 .cloned()
-                                                 .map(|value| {
-                                                     let allowed_values = app
-                                                         .field_meta_cache
-                                                         .get(&item.work_item_type)
-                                                         .and_then(|fields| {
-                                                             fields
-                                                                 .iter()
-                                                                 .find(|f| f.reference_name == id)
-                                                                 .map(|f| f.allowed_values.clone())
-                                                         });
-                                                     VisibleField::with_value(
-                                                         label,
-                                                         id,
-                                                         value,
-                                                         allowed_values,
-                                                     )
-                                                 })
-                                                                })
-                                                                .collect();
-                                                            edit_state.visible_fields =
-                                                                visible_fields;
-                                                        }
+                                                            })
+                                                            .collect();
+                                                        edit_state.visible_fields = visible_fields;
 
                                                         app.detail_view_state.edit_state =
                                                             Some(edit_state);
@@ -1147,6 +1146,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                                 }
                                             }
                                             KeyCode::Esc => {
+
                                                 if app.list_view_state.assigned_to_me_filter_on {
                                                     app.toggle_assigned_to_me_filter()
                                                 }
