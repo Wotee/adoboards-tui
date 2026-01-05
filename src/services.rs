@@ -13,10 +13,7 @@ use azure_identity::AzureCliCredential;
 
 use crate::config::BoardConfig;
 use crate::models::{WorkItem, clean_ado_text};
-use crate::{
-    app::RefreshPolicy, cache::FieldMetaCacheKey, cache::read_field_meta_cache,
-    cache::write_field_meta_cache,
-};
+use crate::{cache::FieldMetaCacheKey, app::RefreshPolicy, cache::read_field_meta_cache, cache::write_field_meta_cache};
 use serde::{Deserialize, Serialize};
 
 fn authenticate_with_cli_credential() -> Result<Credential> {
@@ -70,7 +67,6 @@ pub async fn get_iteration_ids(
     team: &str,
     iteration_id: &str,
 ) -> Result<Vec<i32>> {
-    println!("Get iteration ids");
     let credential = get_credential()?;
     let work_client = WorkClientBuilder::new(credential).build();
     let iterations_client = work_client.iterations_client();
@@ -87,7 +83,6 @@ pub async fn get_iteration_ids(
 }
 
 pub async fn get_backlog_ids(organization: &str, project: &str, team: &str) -> Result<Vec<i32>> {
-    println!("Get backlog ids");
     let credential = get_credential()?;
     let work_client = WorkClientBuilder::new(credential).build();
 
@@ -114,7 +109,6 @@ pub async fn get_items(
     project: &str,
     work_item_ids: Vec<i32>,
 ) -> Result<Vec<WorkItem>> {
-    println!("Get items");
     let credential = get_credential()?;
 
     let ids: String = work_item_ids
@@ -126,14 +120,15 @@ pub async fn get_items(
     let wit_client = WitClientBuilder::new(credential).build();
 
     let work_items_client = wit_client.work_items_client();
-    let full_items = work_items_client.list(organization, ids, project).await?;
+    let full_items = work_items_client
+        .list(organization, ids, project)
+        .await?;
 
     let items = full_items.value.into_iter().map(WorkItem::from).collect();
     Ok(items)
 }
 
 pub async fn fetch_project_id(organization: &str, project_name: &str) -> Result<String> {
-    println!("Fetch project id");
     let credential = get_credential()?;
     let core_client = CoreClientBuilder::new(credential).build();
 
@@ -149,7 +144,6 @@ pub async fn fetch_project_id(organization: &str, project_name: &str) -> Result<
 }
 
 pub async fn fetch_process_template_type(organization: &str, project_id: &str) -> Result<String> {
-    println!("Fetch process template type");
     let credential = get_credential()?;
     let core_client = CoreClientBuilder::new(credential).build();
 
@@ -174,7 +168,6 @@ pub async fn fetch_process_work_item_types(
     organization: &str,
     process_id: &str,
 ) -> Result<Vec<(String, String)>> {
-    println!("Fetch process work item types");
     let credential = get_credential()?;
     let processes_client = ProcessesClientBuilder::new(credential).build();
 
@@ -201,7 +194,6 @@ pub async fn fetch_work_item_layout(
     process_id: &str,
     wit_ref_name: &str,
 ) -> Result<FormLayout> {
-    println!("Fetch work item layout");
     let credential = get_credential()?;
     let processes_client = ProcessesClientBuilder::new(credential).build();
 
@@ -224,7 +216,6 @@ pub async fn fetch_work_item_type_fields(
     project: &str,
     work_item_type_ref: &str,
 ) -> Result<Vec<WorkItemFieldInfo>> {
-    println!("Fetch work item type fields");
     let credential = get_credential()?;
     let wit_client = WitClientBuilder::new(credential).build();
 
