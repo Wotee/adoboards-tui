@@ -54,12 +54,18 @@ fn calculate_type_filter_rect(
     let popup_height = desired_height
         .max(3)
         .min(frame_area.height.saturating_sub(1));
-    let popup_width = 45;
+    let mut popup_width = 45;
 
     let selected_y_on_screen = list_area.y + 1 + relative_y;
 
-    let mut x = list_area.x + 20;
+    let indent = 2;
+    let mut x = list_area.x.saturating_add(indent);
     let mut y = selected_y_on_screen + 1;
+
+    let list_max_width = list_area.width.saturating_sub(2);
+    popup_width = popup_width
+        .min(list_max_width)
+        .min(frame_area.width.saturating_sub(2));
 
     if y + popup_height > frame_area.height {
         y = selected_y_on_screen.saturating_sub(popup_height);
@@ -67,10 +73,16 @@ fn calculate_type_filter_rect(
 
     y = y.max(frame_area.y);
 
-    if x + popup_width > frame_area.width {
-        x = frame_area.width.saturating_sub(popup_width + 1);
-    }
-    x = x.max(frame_area.x + 1);
+    let list_right_bound = list_area
+        .x
+        .saturating_add(list_area.width)
+        .saturating_sub(popup_width + 1);
+    let frame_right_bound = frame_area
+        .width
+        .saturating_sub(popup_width + 1)
+        .max(frame_area.x + 1);
+    x = x.min(list_right_bound).min(frame_right_bound);
+    x = x.max(list_area.x + 1).max(frame_area.x + 1);
 
     Some(Rect {
         x,
@@ -219,12 +231,10 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let items_to_display = app.get_filtered_items();
 
     let list_items: Vec<ListItem> = if items_to_display.is_empty() {
-        vec![
-            ListItem::new(Line::from(
-                "No items match filters — press c in type filter to clear",
-            ))
-            .style(Style::default()),
-        ]
+        vec![ListItem::new(Line::from(
+            "No items match filters — press c in type filter to clear",
+        ))
+        .style(Style::default())]
     } else {
         items_to_display
             .iter()
