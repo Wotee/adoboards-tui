@@ -204,7 +204,7 @@ fn draw_detail_picker_popup(
     }
 }
 
-pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
+pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let constraints = if app.list_view_state.is_filtering {
         [Constraint::Min(0), Constraint::Length(3)]
     } else {
@@ -214,21 +214,23 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints.iter().copied())
-        .split(f.area());
+        .split(area);
 
     let items_to_display = app.get_filtered_items();
 
     let list_items: Vec<ListItem> = if items_to_display.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No items match filters — press c in type filter to clear",
-        ))
-        .style(Style::default().fg(Color::DarkGray))]
+        vec![
+            ListItem::new(Line::from(
+                "No items match filters — press c in type filter to clear",
+            ))
+            .style(Style::default()),
+        ]
     } else {
         items_to_display
             .iter()
             .map(|item| {
                 let content = Line::from(format!("{}: {}", item.id, item.title));
-                ListItem::new(content).style(Style::default().fg(Color::White))
+                ListItem::new(content).style(Style::default())
             })
             .collect()
     };
@@ -273,12 +275,11 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
-                .fg(Color::White)
                 .add_modifier(Modifier::BOLD),
         );
 
     let list_area = chunks[0];
-    f.render_stateful_widget(list, chunks[0], &mut app.list_view_state.list_state);
+    f.render_stateful_widget(list, list_area, &mut app.list_view_state.list_state);
 
     draw_hover_popup(f, app, list_area);
     draw_type_filter_popup(f, app, list_area);
@@ -299,12 +300,24 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
+pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let filtered_items = app.get_filtered_items();
     let selected_index = app.list_view_state.list_state.selected().unwrap_or(0);
-    let item = filtered_items.get(selected_index).expect(
-        "Logic Error: Detail view opened but item selection is invalid for the filtered list.",
-    );
+    let item = match filtered_items.get(selected_index) {
+        Some(item) => item,
+        None => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Color::LightBlue)
+                .title("Details");
+            let empty = Paragraph::new(Line::from("No item selected"))
+                .style(Style::default().fg(Color::DarkGray))
+                .block(block)
+                .wrap(Wrap { trim: true });
+            f.render_widget(empty, area);
+            return;
+        }
+    };
 
     let edit_state = app.detail_view_state.edit_state.as_ref();
     let is_editing = edit_state.map(|s| s.is_editing).unwrap_or(false);
@@ -312,16 +325,51 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
-        .split(f.area());
+        .split(area);
 
-    let (title_value, active_field, mut fields_to_render) = if let Some(state) = edit_state {
-        (
-            state.title.clone(),
-            state.active_field,
-            state.visible_fields.clone(),
-        )
+    let mut fields_to_render = if let Some(state) = edit_state {
+        state.visible_fields.clone()
     } else {
-        (item.title.clone(), DetailField::Title, Vec::new())
+        let source = app.current_source();
+        let cache_key = (
+            source.organization.clone(),
+            source.project.clone(),
+            item.work_item_type.clone(),
+        );
+
+        app.layout_cache
+            .get(&cache_key)
+            .map(|controls| {
+                controls
+                    .iter()
+                    .filter_map(|(id, label)| {
+                        item.fields.get(id).map(|value| {
+                            let allowed_values = app
+                                .field_meta_cache
+                                .get(&item.work_item_type)
+                                .and_then(|fields| {
+                                    fields
+                                        .iter()
+                                        .find(|f| f.reference_name == *id)
+                                        .map(|f| f.allowed_values.clone())
+                                });
+                            crate::app::VisibleField::with_value(
+                                label.clone(),
+                                id.clone(),
+                                value.clone(),
+                                allowed_values,
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    let (title_value, active_field) = if let Some(state) = edit_state {
+        (state.title.clone(), state.active_field)
+    } else {
+        (item.title.clone(), DetailField::Title)
     };
 
     let title_text = format!("{}: {}", item.id, title_value);

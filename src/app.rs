@@ -819,10 +819,18 @@ pub async fn run_app<B: ratatui::backend::Backend>(
     }
     loop {
         terminal.draw(|f| match app.loading_state {
-            LoadingState::Loaded => match app.view {
-                AppView::List => draw_list_view(f, app),
-                AppView::Detail => draw_detail_view(f, app),
-            },
+            LoadingState::Loaded => {
+                let main_chunks = ratatui::layout::Layout::default()
+                    .direction(ratatui::layout::Direction::Horizontal)
+                    .constraints([
+                        ratatui::layout::Constraint::Percentage(38),
+                        ratatui::layout::Constraint::Percentage(62),
+                    ])
+                    .split(f.area());
+
+                draw_list_view(f, app, main_chunks[0]);
+                draw_detail_view(f, app, main_chunks[1]);
+            }
             LoadingState::Loading => {}
             LoadingState::Error(ref msg) => {
                 draw_status_screen(f, &format!("Failed to load data. {}", msg))
