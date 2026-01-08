@@ -231,15 +231,17 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let items_to_display = app.get_filtered_items();
 
     let list_items: Vec<ListItem> = if items_to_display.is_empty() {
-        vec![ListItem::new(Line::from(
-            "No items match filters — press c in type filter to clear",
-        ))
-        .style(Style::default())]
+        vec![
+            ListItem::new(Line::from(
+                "No items match filters — press c in type filter to clear",
+            ))
+            .style(Style::default()),
+        ]
     } else {
         items_to_display
             .iter()
             .map(|item| {
-                let content = Line::from(format!("{}: {}", item.id, item.title));
+                let content = Line::from(format!("{}", item.title));
                 ListItem::new(content).style(Style::default())
             })
             .collect()
