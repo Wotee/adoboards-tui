@@ -13,10 +13,6 @@ use crate::models::{DetailField, WorkItem};
 use crate::services::{WorkItemFieldInfo, fetch_work_item_layout, update_work_item_in_ado};
 use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
 
-pub enum AppView {
-    List,
-    Detail,
-}
 
 #[derive(Clone, PartialEq)]
 pub enum RefreshPolicy {
@@ -227,7 +223,6 @@ pub struct SourceEntry {
 }
 
 pub struct App {
-    pub view: AppView,
     pub items: Vec<WorkItem>,
     pub list_view_state: ListViewState,
     pub detail_view_state: DetailViewState,
@@ -274,7 +269,6 @@ impl App {
         }
 
         App {
-            view: AppView::List,
             items: Vec::new(),
             list_view_state: ListViewState::new(list_state),
             detail_view_state: DetailViewState::default(),
@@ -323,12 +317,26 @@ impl App {
         self.items = items;
         self.list_view_state.list_state = list_state;
         self.list_view_state.type_picker.selected = None;
+        self.detail_view_state.edit_state = None;
+        self.detail_view_state.save_status = SaveStatus::Idle;
+        self.detail_view_state.save_receiver = None;
         self.loading_state = LoadingState::Loaded;
+    }
+
+    fn reset_inactive_edit_state(&mut self) {
+        if let Some(state) = self.detail_view_state.edit_state.as_ref() {
+            if !state.is_editing {
+                self.detail_view_state.edit_state = None;
+                self.detail_view_state.save_status = SaveStatus::Idle;
+                self.detail_view_state.save_receiver = None;
+            }
+        }
     }
 
     pub fn jump_to_start(&mut self) {
         if !self.get_filtered_items().is_empty() {
             self.list_view_state.list_state.select(Some(0));
+            self.reset_inactive_edit_state();
         }
     }
 
@@ -336,6 +344,97 @@ impl App {
         let items_len = self.get_filtered_items().len();
         if items_len > 0 {
             self.list_view_state.list_state.select(Some(items_len - 1));
+            self.reset_inactive_edit_state();
+        }
+    }
+
+    async fn ensure_detail_state_for_selected_item(&mut self) {
+        if self.detail_view_state.edit_state.is_some() {
+            return;
+        }
+        self.detail_view_state.save_status = SaveStatus::Idle;
+        self.detail_view_state.save_receiver = None;
+        if let Some(item) = self.get_selected_item().cloned() {
+            let reference_name = self.work_item_types.get(&item.work_item_type).cloned();
+            let mut edit_state = DetailEditState::new_from_item(&item);
+
+            let organization = self.current_source().organization.clone();
+            let project = self.current_source().project.clone();
+            let cache_key = (
+                organization.clone(),
+                project.clone(),
+                item.work_item_type.clone(),
+            );
+            let layout_key_display = LayoutCacheKey {
+                organization: organization.clone(),
+                project: project.clone(),
+                work_item_type: item.work_item_type.clone(),
+            };
+            let layout_key_ref = reference_name.as_ref().map(|reference| LayoutCacheKey {
+                organization: organization.clone(),
+                project: project.clone(),
+                work_item_type: reference.clone(),
+            });
+
+            let cached_controls = if self.refresh_policy == RefreshPolicy::Full {
+                None
+            } else if let Some(cached) = self.layout_cache.get(&cache_key) {
+                Some(cached.clone())
+            } else if let Some(disk) = read_layout_cache(&layout_key_display).or_else(|| {
+                layout_key_ref
+                    .as_ref()
+                    .and_then(|ref_key| read_layout_cache(ref_key))
+            }) {
+                self.layout_cache.insert(cache_key.clone(), disk.clone());
+                Some(disk)
+            } else {
+                None
+            };
+
+            let controls = if let Some(cached) = cached_controls {
+                cached
+            } else if let (Some(process_id), Some(reference)) =
+                (self.process_template_type.clone(), reference_name.clone())
+            {
+                match fetch_visible_controls(&organization, &process_id, &reference).await {
+                    Ok(controls) => {
+                        if let Some(ref_key) = layout_key_ref.as_ref() {
+                            let _ = write_layout_cache(ref_key, &controls);
+                        }
+                        let _ = write_layout_cache(&layout_key_display, &controls);
+                        self.layout_cache.insert(cache_key.clone(), controls.clone());
+                        controls
+                    }
+                    Err(err) => {
+                        eprintln!("Failed to fetch layout: {}", err);
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+
+            let visible_fields = controls
+                .into_iter()
+                .filter_map(|(id, label)| {
+                    item.fields.get(&id).cloned().map(|value| {
+                        let allowed_values = self.field_meta_cache.get(&item.work_item_type).and_then(
+                            |fields| {
+                                fields
+                                    .iter()
+                                    .find(|f| f.reference_name == id)
+                                    .map(|f| f.allowed_values.clone())
+                            },
+                        );
+                        VisibleField::with_value(label, id, value, allowed_values)
+                    })
+                })
+                .collect();
+            edit_state.visible_fields = visible_fields;
+
+            self.detail_view_state.edit_state = Some(edit_state);
+            self.detail_view_state.save_status = SaveStatus::Idle;
+            self.detail_view_state.save_receiver = None;
         }
     }
 
@@ -551,21 +650,11 @@ impl App {
 
     fn cancel_edit(&mut self) {
         self.detail_view_state.save_receiver = None;
-        let selected_item = self.get_selected_item().cloned();
-        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+        if let Some(state) = self.detail_view_state.edit_state.as_ref() {
             if state.is_editing {
-                let existing_fields = state.visible_fields.clone();
-                if let Some(item) = selected_item {
-                    let new_state = App::rebuild_edit_state_from_item(&item, &existing_fields);
-                    *state = new_state;
-                }
-                state.is_editing = false;
+                self.detail_view_state.edit_state = None;
                 self.detail_view_state.save_status = SaveStatus::Idle;
-            } else {
-                self.view = AppView::List;
             }
-        } else {
-            self.view = AppView::List;
         }
     }
 
@@ -903,494 +992,267 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                 _ => {}
                             }
                         } else {
+                            app.poll_save_completion();
+
+                            if matches!(app.detail_view_state.save_status, SaveStatus::Saving) {
+                                app.last_key_press = None;
+                                continue;
+                            }
+
+                            let editing_active = app
+                                .detail_view_state
+                                .edit_state
+                                .as_ref()
+                                .is_some_and(|s| s.is_editing);
+
                             let current_char = match key.code {
                                 KeyCode::Char(c) => Some(c),
                                 _ => None,
                             };
-                            match app.view {
-                                AppView::List => {
-                                    if let Some(c) = current_char {
-                                        let last_key = app.last_key_press;
 
-                                        if key_matches_sequence(c, last_key, &app.keys.jump_to_top)
-                                        {
+                            if let Some(c) = current_char {
+                                let last_key = app.last_key_press;
+
+                                if key_matches_sequence(c, last_key, &app.keys.quit) {
+                                    return Ok(());
+                                }
+
+                                if editing_active {
+                                    if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                        App::clamp_active_field(state);
+                                        if App::active_picker(state).is_some() {
+                                            if key_matches_sequence(c, last_key, &app.keys.next) {
+                                                app.move_active_picker(1);
+                                                app.last_key_press = Some(key.code);
+                                                continue;
+                                            } else if key_matches_sequence(
+                                                c,
+                                                last_key,
+                                                &app.keys.previous,
+                                            ) {
+                                                app.move_active_picker(-1);
+                                                app.last_key_press = Some(key.code);
+                                                continue;
+                                            }
+                                        }
+                                    }
+
+                                    app.apply_typing(c);
+                                    app.last_key_press = None;
+                                    continue;
+                                }
+
+                                if key_matches_sequence(c, last_key, &app.keys.jump_to_top) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.jump_to_start();
+                                } else if key_matches_sequence(c, last_key, &app.keys.jump_to_end) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.jump_to_end();
+                                } else if key_matches_sequence(c, last_key, &app.keys.search) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.list_view_state.is_filtering = true;
+                                    app.list_view_state.filter_query.clear();
+                                    app.clamp_selection();
+                                } else if key_matches_sequence(c, last_key, &app.keys.next) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.navigate_list(1);
+                                } else if key_matches_sequence(c, last_key, &app.keys.previous) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.navigate_list(-1);
+                                } else if key_matches_sequence(c, last_key, &app.keys.next_board) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.next_source();
+                                    return Ok(());
+                                } else if key_matches_sequence(c, last_key, &app.keys.previous_board) {
+                                    app.list_view_state.is_list_details_hover_visible = false;
+                                    app.previous_source();
+                                    return Ok(());
+                                } else if key_matches_sequence(c, last_key, &app.keys.hover) {
+                                    app.list_view_state.is_list_details_hover_visible = true;
+                                } else if key_matches_sequence(c, last_key, &app.keys.open) {
+                                    app.open_item();
+                                } else if key_matches_sequence(
+                                    c,
+                                    last_key,
+                                    &app.keys.assigned_to_me_filter,
+                                ) {
+                                    app.toggle_assigned_to_me_filter()
+                                } else if key_matches_sequence(
+                                    c,
+                                    last_key,
+                                    &app.keys.work_item_type_filter,
+                                ) {
+                                    app.toggle_type_filter_menu();
+                                } else if key_matches_sequence(c, last_key, &app.keys.refresh) {
+                                    app.refresh_policy = RefreshPolicy::Normal;
+                                    app.loading_state = LoadingState::Loading;
+                                    return Ok(());
+                                } else if key_matches_sequence(c, last_key, &app.keys.full_refresh) {
+                                    app.refresh_policy = RefreshPolicy::Full;
+                                    app.loading_state = LoadingState::Loading;
+                                    return Ok(());
+                                } else if key_matches_sequence(c, last_key, &app.keys.edit_config) {
+                                    let _ = crate::config::open_config();
+                                    eprintln!("Reopen adoboards for changes to take effect");
+                                    return Ok(());
+                                } else if key_matches_sequence(c, last_key, &app.keys.edit_item) {
+                                    app.ensure_detail_state_for_selected_item().await;
+                                    app.begin_edit();
+                                }
+
+                                app.last_key_press = Some(key.code);
+                            } else {
+                                match key.code {
+                                    KeyCode::Esc => {
+                                        if editing_active {
+                                            app.cancel_edit();
+                                        } else {
+                                            if app.list_view_state.assigned_to_me_filter_on {
+                                                app.toggle_assigned_to_me_filter()
+                                            }
                                             app.list_view_state.is_list_details_hover_visible =
                                                 false;
-                                            app.jump_to_start();
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.jump_to_end,
-                                        ) {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.jump_to_end();
-                                        } else if key_matches_sequence(c, last_key, &app.keys.quit)
-                                        {
-                                            return Ok(());
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.search,
-                                        ) {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.list_view_state.is_filtering = true;
-                                            app.list_view_state.filter_query.clear();
-                                            app.clamp_selection();
-                                        } else if key_matches_sequence(c, last_key, &app.keys.next)
-                                        {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.navigate_list(1);
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.previous,
-                                        ) {
+                                            if !app.list_view_state.filter_query.is_empty() {
+                                                app.list_view_state.filter_query.clear();
+                                                app.clamp_selection();
+                                            }
+                                            if app.list_view_state.type_picker.is_open {
+                                                app.toggle_type_filter_menu();
+                                            }
+                                            app.detail_view_state.edit_state = None;
+                                        }
+                                    }
+                                    KeyCode::Up => {
+                                        if editing_active {
+                                            app.move_active_picker(-1);
+                                        } else {
                                             app.list_view_state.is_list_details_hover_visible =
                                                 false;
                                             app.navigate_list(-1);
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.next_board,
-                                        ) {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.next_source();
-                                            return Ok(());
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.previous_board,
-                                        ) {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.previous_source();
-                                            return Ok(());
-                                        } else if key_matches_sequence(c, last_key, &app.keys.hover)
-                                        {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                true;
-                                        } else if key_matches_sequence(c, last_key, &app.keys.open)
-                                        {
-                                            app.open_item();
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.assigned_to_me_filter,
-                                        ) {
-                                            app.toggle_assigned_to_me_filter()
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.work_item_type_filter,
-                                        ) {
-                                            app.toggle_type_filter_menu();
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.refresh,
-                                        ) {
-                                            app.refresh_policy = RefreshPolicy::Normal;
-                                            app.loading_state = LoadingState::Loading;
-                                            return Ok(());
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.full_refresh,
-                                        ) {
-                                            app.refresh_policy = RefreshPolicy::Full;
-                                            app.loading_state = LoadingState::Loading;
-                                            return Ok(());
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.edit_config,
-                                        ) {
-                                            let _ = crate::config::open_config();
-                                            eprintln!(
-                                                "Reopen adoboards for changes to take effect"
-                                            );
-                                            return Ok(());
                                         }
-
-                                        app.last_key_press = Some(key.code);
-                                    } else {
-                                        match key.code {
-                                            KeyCode::Enter => {
-                                                app.list_view_state.is_list_details_hover_visible =
-                                                    false;
-                                                if app
-                                                    .list_view_state
-                                                    .list_state
-                                                    .selected()
-                                                    .is_some()
-                                                {
-                                                    app.view = AppView::Detail;
-                                                    if let Some(item) =
-                                                        app.get_selected_item().cloned()
-                                                    {
-                                                        let reference_name = app
-                                                            .work_item_types
-                                                            .get(&item.work_item_type)
-                                                            .cloned();
-                                                        let mut edit_state =
-                                                            DetailEditState::new_from_item(&item);
-
-                                                        let organization = app
-                                                            .current_source()
-                                                            .organization
-                                                            .clone();
-                                                        let project = app.current_source().project.clone();
-                                                        let cache_key = (
-                                                            organization.clone(),
-                                                            project.clone(),
-                                                            item.work_item_type.clone(),
-                                                        );
-                                                        let layout_key_display = LayoutCacheKey {
-                                                            organization: organization.clone(),
-                                                            project: project.clone(),
-                                                            work_item_type: item.work_item_type.clone(),
-                                                        };
-                                                        let layout_key_ref = reference_name.as_ref().map(|reference| {
-                                                            LayoutCacheKey {
-                                                                organization: organization.clone(),
-                                                                project: project.clone(),
-                                                                work_item_type: reference.clone(),
-                                                            }
-                                                        });
-
-                                                        let cached_controls = if app.refresh_policy
-                                                            == RefreshPolicy::Full
-                                                        {
-                                                            None
-                                                        } else if let Some(cached) =
-                                                            app.layout_cache.get(&cache_key)
-                                                        {
-                                                            Some(cached.clone())
-                                                        } else if let Some(disk) = read_layout_cache(
-                                                            &layout_key_display,
-                                                        )
-                                                        .or_else(|| {
-                                                            layout_key_ref
-                                                                .as_ref()
-                                                                .and_then(|ref_key| read_layout_cache(ref_key))
-                                                        }) {
-                                                            app.layout_cache
-                                                                .insert(cache_key.clone(), disk.clone());
-                                                            Some(disk)
+                                    }
+                                    KeyCode::Down => {
+                                        if editing_active {
+                                            app.move_active_picker(1);
+                                        } else {
+                                            app.list_view_state.is_list_details_hover_visible =
+                                                false;
+                                            app.navigate_list(1);
+                                        }
+                                    }
+                                    KeyCode::Enter => {
+                                        if editing_active {
+                                            app.select_active_picker_value();
+                                            app.start_save();
+                                        }
+                                    }
+                                    KeyCode::Tab => {
+                                        if let Some(state) =
+                                            app.detail_view_state.edit_state.as_mut()
+                                        {
+                                            if state.is_editing {
+                                                let total_fields = state.visible_fields.len();
+                                                let next = match state.active_field {
+                                                    DetailField::Title => {
+                                                        if total_fields == 0 {
+                                                            DetailField::Title
                                                         } else {
-                                                            None
-                                                        };
-
-                                                        let controls = if let Some(cached) =
-                                                            cached_controls
-                                                        {
-                                                            cached
-                                                        } else if let (Some(process_id), Some(reference)) = (
-                                                            app.process_template_type.clone(),
-                                                            reference_name.clone(),
-                                                        ) {
-                                                            match fetch_visible_controls(
-                                                                &organization,
-                                                                &process_id,
-                                                                &reference,
-                                                            )
-                                                            .await
-                                                            {
-                                                                Ok(controls) => {
-                                                                    if let Some(ref_key) =
-                                                                        layout_key_ref.as_ref()
-                                                                    {
-                                                                        let _ =
-                                                                            write_layout_cache(ref_key, &controls);
-                                                                    }
-                                                                    let _ = write_layout_cache(
-                                                                        &layout_key_display,
-                                                                        &controls,
-                                                                    );
-                                                                    app.layout_cache.insert(
-                                                                        cache_key.clone(),
-                                                                        controls.clone(),
-                                                                    );
-                                                                    controls
-                                                                }
-                                                                Err(err) => {
-                                                                    eprintln!(
-                                                                        "Failed to fetch layout: {}",
-                                                                        err
-                                                                    );
-                                                                    Vec::new()
-                                                                }
-                                                            }
-                                                        } else {
-                                                            Vec::new()
-                                                        };
-
-                                                        let visible_fields = controls
-                                                            .into_iter()
-                                                            .filter_map(|(id, label)| {
-                                                                item.fields
-                                                                    .get(&id)
-                                                                    .cloned()
-                                                                    .map(|value| {
-                                                                        let allowed_values = app
-                                                                            .field_meta_cache
-                                                                            .get(&item.work_item_type)
-                                                                            .and_then(|fields| {
-                                                                                fields
-                                                                                    .iter()
-                                                                                    .find(|f| f.reference_name == id)
-                                                                                    .map(|f| f.allowed_values.clone())
-                                                                            });
-                                                                        VisibleField::with_value(
-                                                                            label,
-                                                                            id,
-                                                                            value,
-                                                                            allowed_values,
-                                                                        )
-                                                                    })
-                                                            })
-                                                            .collect();
-                                                        edit_state.visible_fields = visible_fields;
-
-                                                        app.detail_view_state.edit_state =
-                                                            Some(edit_state);
-                                                        app.detail_view_state.save_status =
-                                                            SaveStatus::Idle;
-                                                        app.detail_view_state.save_receiver = None;
+                                                            DetailField::Dynamic(0)
+                                                        }
                                                     }
-                                                }
+                                                    DetailField::Dynamic(idx) => {
+                                                        if idx + 1 < total_fields {
+                                                            DetailField::Dynamic(idx + 1)
+                                                        } else {
+                                                            DetailField::Title
+                                                        }
+                                                    }
+                                                };
+                                                state.active_field = next;
+                                                App::clamp_active_field(state);
                                             }
-                                            KeyCode::Esc => {
-
-                                                if app.list_view_state.assigned_to_me_filter_on {
-                                                    app.toggle_assigned_to_me_filter()
-                                                }
-                                                app.list_view_state.is_list_details_hover_visible =
-                                                    false;
-                                                if !app.list_view_state.filter_query.is_empty() {
-                                                    app.list_view_state.filter_query.clear();
-                                                    app.clamp_selection();
-                                                }
-                                                if app.list_view_state.type_picker.is_open {
-                                                    app.toggle_type_filter_menu();
-                                                }
-                                            }
-
-                                            KeyCode::Up => {
-                                                app.list_view_state.is_list_details_hover_visible =
-                                                    false;
-                                                app.navigate_list(-1);
-                                            }
-                                            KeyCode::Down => {
-                                                app.list_view_state.is_list_details_hover_visible =
-                                                    false;
-                                                app.navigate_list(1);
-                                            }
-                                            _ => {}
                                         }
-                                        app.last_key_press = None;
                                     }
-                                }
-                                AppView::Detail => {
-                                    app.poll_save_completion();
-
-                                    if matches!(
-                                        app.detail_view_state.save_status,
-                                        SaveStatus::Saving
-                                    ) {
-                                        app.last_key_press = None;
-                                        continue;
+                                    KeyCode::BackTab => {
+                                        if let Some(state) =
+                                            app.detail_view_state.edit_state.as_mut()
+                                        {
+                                            if state.is_editing {
+                                                let total_fields = state.visible_fields.len();
+                                                let prev = match state.active_field {
+                                                    DetailField::Title => {
+                                                        if total_fields == 0 {
+                                                            DetailField::Title
+                                                        } else {
+                                                            DetailField::Dynamic(total_fields - 1)
+                                                        }
+                                                    }
+                                                    DetailField::Dynamic(idx) => {
+                                                        if idx == 0 {
+                                                            DetailField::Title
+                                                        } else {
+                                                            DetailField::Dynamic(idx - 1)
+                                                        }
+                                                    }
+                                                };
+                                                state.active_field = prev;
+                                                App::clamp_active_field(state);
+                                            }
+                                        }
                                     }
-
-                                    if let Some(c) = current_char {
+                                    KeyCode::Delete => {
                                         if let Some(state) =
                                             app.detail_view_state.edit_state.as_mut()
                                         {
                                             if state.is_editing {
                                                 App::clamp_active_field(state);
-                                                if App::active_picker(state).is_some() {
-                                                    let last_key = app.last_key_press;
-                                                    if key_matches_sequence(
-                                                        c,
-                                                        last_key,
-                                                        &app.keys.next,
-                                                    ) {
-                                                        app.move_active_picker(1);
-                                                    } else if key_matches_sequence(
-                                                        c,
-                                                        last_key,
-                                                        &app.keys.previous,
-                                                    ) {
-                                                        app.move_active_picker(-1);
-                                                    }
-                                                    app.last_key_press = Some(key.code);
-                                                    continue;
-                                                }
-
-                                                app.apply_typing(c);
-                                                app.last_key_press = None;
-                                                continue;
-                                            }
-                                        }
-
-                                        let last_key = app.last_key_press;
-
-                                        if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                            app.view = AppView::List;
-                                        } else if key_matches_sequence(c, last_key, &app.keys.open)
-                                        {
-                                            app.open_item();
-                                        } else if key_matches_sequence(
-                                            c,
-                                            last_key,
-                                            &app.keys.edit_item,
-                                        ) {
-                                            app.begin_edit();
-                                        }
-
-                                        app.last_key_press = Some(key.code);
-                                    } else {
-                                        match key.code {
-                                            KeyCode::Esc => {
-                                                app.cancel_edit();
-                                            }
-                                            KeyCode::Tab => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        let total_fields =
-                                                            state.visible_fields.len();
-                                                        let next = match state.active_field {
-                                                            DetailField::Title => {
-                                                                if total_fields == 0 {
-                                                                    DetailField::Title
-                                                                } else {
-                                                                    DetailField::Dynamic(0)
-                                                                }
-                                                            }
-                                                            DetailField::Dynamic(idx) => {
-                                                                if idx + 1 < total_fields {
-                                                                    DetailField::Dynamic(idx + 1)
-                                                                } else {
-                                                                    DetailField::Title
-                                                                }
-                                                            }
-                                                        };
-                                                        state.active_field = next;
-                                                        App::clamp_active_field(state);
-                                                    }
-                                                }
-                                            }
-                                            KeyCode::BackTab => {
-                                                if let Some(state) =
-                                                    app.detail_view_state.edit_state.as_mut()
-                                                {
-                                                    if state.is_editing {
-                                                        let total_fields =
-                                                            state.visible_fields.len();
-                                                        let prev = match state.active_field {
-                                                            DetailField::Title => {
-                                                                if total_fields == 0 {
-                                                                    DetailField::Title
-                                                                } else {
-                                                                    DetailField::Dynamic(
-                                                                        total_fields - 1,
-                                                                    )
-                                                                }
-                                                            }
-                                                            DetailField::Dynamic(idx) => {
-                                                                if idx == 0 {
-                                                                    DetailField::Title
-                                                                } else {
-                                                                    DetailField::Dynamic(idx - 1)
-                                                                }
-                                                            }
-                                                        };
-                                                        state.active_field = prev;
-                                                        App::clamp_active_field(state);
-                                                    }
-                                                }
-                                            }
-                                            KeyCode::Up => {
-                                                app.move_active_picker(-1);
-                                            }
-                                            KeyCode::Down => {
-                                                app.move_active_picker(1);
-                                            }
-                                            KeyCode::Enter => {
-                                                app.select_active_picker_value();
-                                                app.start_save();
-                                            }
-
-                                                KeyCode::Delete => {
-                                                    if let Some(state) =
-                                                        app.detail_view_state.edit_state.as_mut()
-                                                    {
-                                                        if state.is_editing {
-                                                            App::clamp_active_field(state);
-                                                            match state.active_field {
-                                                                DetailField::Title => {
-                                                                    state.title.clear()
-                                                                }
-                                                                DetailField::Dynamic(idx) => {
-                                                                    if let Some(field) = state
-                                                                        .visible_fields
-                                                                        .get_mut(idx)
-                                                                    {
-                                                                        let picker_has_options = field
-                                                                            .picker
-                                                                            .as_ref()
-                                                                            .map(|p| !p.options.is_empty())
-                                                                            .unwrap_or(false);
-                                                                        if !picker_has_options {
-                                                                            field.value.clear();
-                                                                        }
-                                                                    }
-                                                                }
+                                                match state.active_field {
+                                                    DetailField::Title => state.title.clear(),
+                                                    DetailField::Dynamic(idx) => {
+                                                        if let Some(field) = state.visible_fields.get_mut(idx) {
+                                                            let picker_has_options = field
+                                                                .picker
+                                                                .as_ref()
+                                                                .map(|p| !p.options.is_empty())
+                                                                .unwrap_or(false);
+                                                            if !picker_has_options {
+                                                                field.value.clear();
                                                             }
                                                         }
                                                     }
                                                 }
-                                                KeyCode::Backspace => {
-                                                    if let Some(state) =
-                                                        app.detail_view_state.edit_state.as_mut()
-                                                    {
-                                                        if state.is_editing {
-                                                            App::clamp_active_field(state);
-                                                            match state.active_field {
-                                                                DetailField::Title => {
-                                                                    state.title.pop();
-                                                                }
-                                                                DetailField::Dynamic(idx) => {
-                                                                    if let Some(field) = state
-                                                                        .visible_fields
-                                                                        .get_mut(idx)
-                                                                    {
-                                                                        let picker_has_options = field
-                                                                            .picker
-                                                                            .as_ref()
-                                                                            .map(|p| !p.options.is_empty())
-                                                                            .unwrap_or(false);
-                                                                        if !picker_has_options {
-                                                                            field.value.pop();
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-
-                                            _ => {}
+                                            }
                                         }
-                                        app.last_key_press = None;
                                     }
+                                    KeyCode::Backspace => {
+                                        if let Some(state) =
+                                            app.detail_view_state.edit_state.as_mut()
+                                        {
+                                            if state.is_editing {
+                                                App::clamp_active_field(state);
+                                                match state.active_field {
+                                                    DetailField::Title => {
+                                                        state.title.pop();
+                                                    }
+                                                    DetailField::Dynamic(idx) => {
+                                                        if let Some(field) = state.visible_fields.get_mut(idx) {
+                                                            let picker_has_options = field
+                                                                .picker
+                                                                .as_ref()
+                                                                .map(|p| !p.options.is_empty())
+                                                                .unwrap_or(false);
+                                                            if !picker_has_options {
+                                                                field.value.pop();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
+                                app.last_key_press = None;
                             }
                         }
                     }
