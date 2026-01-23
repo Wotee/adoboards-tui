@@ -188,13 +188,9 @@ Use **Nix Flakes** and **direnv** to ensure a perfectly reproducible development
 Future plans and ideas for `adoboards`:
 ### Common
 * Configurable "backlog level"
-* View hotkeys (for current view)
 * Crashes if not authenticated
-### List view
-* Cache backlogs when using multiple?
 * Create work items
-### Detail view
 * Refine WI description/AC so line breaks etc. are not broken
 * See parent/child items 
 * Go to parent/child items 
-
+* See comments
