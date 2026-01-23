@@ -80,6 +80,8 @@ You can set both boards and iterations; adoboards will let you cycle through all
 
 Hotkeys are configurable. The default keys are:
 
+Press `?` in the app to see the current hotkeys for your configured bindings.
+
 ### List View
 | Name | Key | Action |
 |------|-----|--------|
@@ -195,5 +197,4 @@ Future plans and ideas for `adoboards`:
 * Refine WI description/AC so line breaks etc. are not broken
 * See parent/child items 
 * Go to parent/child items 
-
 

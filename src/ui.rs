@@ -216,6 +216,151 @@ fn draw_detail_picker_popup(
     }
 }
 
+pub fn draw_help_popup(f: &mut ratatui::Frame, app: &App) {
+    if !app.showing_help {
+        return;
+    }
+
+    let area = f.area();
+    let width = (area.width as f32 * 0.8).round() as u16;
+    let height = (area.height as f32 * 0.8).round() as u16;
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+
+    let popup_rect = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    let keys = &app.keys;
+    let key = |k: &str| {
+        Span::styled(
+            k.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+
+    lines.push(Line::from("List"));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.quit),
+        Span::raw(" quit"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.next),
+        Span::raw(" next / "),
+        key(&keys.previous),
+        Span::raw(" previous"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.jump_to_top),
+        Span::raw(" top / "),
+        key(&keys.jump_to_end),
+        Span::raw(" end"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  Enter open item, "),
+        key(&keys.hover),
+        Span::raw(" hover"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.search),
+        Span::raw(" search"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.work_item_type_filter),
+        Span::raw(" type filter, "),
+        key(&keys.assigned_to_me_filter),
+        Span::raw(" assigned-to-me"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.next_board),
+        Span::raw(" next board / "),
+        key(&keys.previous_board),
+        Span::raw(" prev board"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.refresh),
+        Span::raw(" refresh / "),
+        key(&keys.full_refresh),
+        Span::raw(" full refresh"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.edit_config),
+        Span::raw(" edit config"),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Detail"));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.open),
+        Span::raw(" open in browser"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key(&keys.edit_item),
+        Span::raw(" edit item"),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Edit Mode"));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key("Enter"),
+        Span::raw(" save"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key("Tab"),
+        Span::raw(" / "),
+        key("Shift-Tab"),
+        Span::raw(" move field"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        key("Esc"),
+        Span::raw(" cancel edit"),
+    ]));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("Type Filter"));
+    lines.push(Line::from("  ↑/↓ move, Space/Enter toggle"));
+    lines.push(Line::from("  c clear filters, Esc close"));
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("Help: "),
+        key(&keys.help),
+        Span::raw(" (toggle)"),
+    ]));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightBlue))
+        // .style(Style::default().bg(Color::Black))
+        .title("Hotkeys");
+    let paragraph = Paragraph::new(lines)
+        // .style(Style::default().bg(Color::Black))
+        .wrap(Wrap { trim: false })
+        .block(block);
+    f.render_widget(Clear, popup_rect);
+    f.render_widget(paragraph, popup_rect);
+}
+
 pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     let constraints = if app.list_view_state.is_filtering {
         [Constraint::Min(0), Constraint::Length(3)]

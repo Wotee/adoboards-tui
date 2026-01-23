@@ -237,6 +237,7 @@ pub struct App {
     pub layout_cache: HashMap<(String, String, String), Vec<(String, String)>>,
     pub field_meta_cache: HashMap<String, Vec<WorkItemFieldInfo>>,
     pub refresh_policy: RefreshPolicy,
+    pub showing_help: bool,
 }
 
 impl App {
@@ -283,6 +284,7 @@ impl App {
             layout_cache: HashMap::new(),
             field_meta_cache: HashMap::new(),
             refresh_policy: RefreshPolicy::Normal,
+            showing_help: false,
         }
     }
 
@@ -919,6 +921,7 @@ pub async fn run_app<B: ratatui::backend::Backend>(
 
                 draw_list_view(f, app, main_chunks[0]);
                 draw_detail_view(f, app, main_chunks[1]);
+                crate::ui::draw_help_popup(f, app);
             }
             LoadingState::Loading => {}
             LoadingState::Error(ref msg) => {
@@ -927,18 +930,40 @@ pub async fn run_app<B: ratatui::backend::Backend>(
         })?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match app.loading_state {
-                    LoadingState::Loading | LoadingState::Error(_) => match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        _ => {}
-                    },
-                    _ => {
-                        if app.list_view_state.is_filtering {
-                            match key.code {
-                                KeyCode::Enter | KeyCode::Esc => {
-                                    app.list_view_state.is_filtering = false;
-                                    if key.code == KeyCode::Esc {
+                    if let Event::Key(key) = event::read()? {
+                        match app.loading_state {
+                            LoadingState::Loading | LoadingState::Error(_) => match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                                _ => {}
+                            },
+                            _ => {
+                                if app.showing_help {
+                                    match key.code {
+                                        KeyCode::Esc => {
+                                            app.showing_help = false;
+                                            app.last_key_press = None;
+                                        }
+                                        KeyCode::Char(c) => {
+                                            let last_key = app.last_key_press;
+                                            if key_matches_sequence(c, last_key, &app.keys.help)
+                                                || key_matches_sequence(c, last_key, &app.keys.quit)
+                                            {
+                                                app.showing_help = false;
+                                                app.last_key_press = None;
+                                            } else {
+                                                app.last_key_press = Some(key.code);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    continue;
+                                }
+
+                                if app.list_view_state.is_filtering {
+                                    match key.code {
+                                        KeyCode::Enter | KeyCode::Esc => {
+                                            app.list_view_state.is_filtering = false;
+                                            if key.code == KeyCode::Esc {
                                         app.list_view_state.filter_query.clear();
                                         app.clamp_selection();
                                     }
@@ -1005,22 +1030,28 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                 .as_ref()
                                 .is_some_and(|s| s.is_editing);
 
-                            let current_char = match key.code {
-                                KeyCode::Char(c) => Some(c),
-                                _ => None,
-                            };
+                                    let current_char = match key.code {
+                                        KeyCode::Char(c) => Some(c),
+                                        _ => None,
+                                    };
 
-                            if let Some(c) = current_char {
-                                let last_key = app.last_key_press;
+                                    if let Some(c) = current_char {
+                                        let last_key = app.last_key_press;
 
-                                if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                    return Ok(());
-                                }
+                                        if key_matches_sequence(c, last_key, &app.keys.quit) {
+                                            return Ok(());
+                                        }
 
-                                if editing_active {
-                                    if let Some(state) = app.detail_view_state.edit_state.as_mut() {
-                                        App::clamp_active_field(state);
-                                        if App::active_picker(state).is_some() {
+                                        if key_matches_sequence(c, last_key, &app.keys.help) {
+                                            app.showing_help = !app.showing_help;
+                                            app.last_key_press = None;
+                                            continue;
+                                        }
+
+                                        if editing_active {
+                                            if let Some(state) = app.detail_view_state.edit_state.as_mut() {
+                                                App::clamp_active_field(state);
+                                                if App::active_picker(state).is_some() {
                                             if key_matches_sequence(c, last_key, &app.keys.next) {
                                                 app.move_active_picker(1);
                                                 app.last_key_press = Some(key.code);
@@ -1098,13 +1129,13 @@ pub async fn run_app<B: ratatui::backend::Backend>(
                                 } else if key_matches_sequence(c, last_key, &app.keys.edit_item) {
                                     app.ensure_detail_state_for_selected_item().await;
                                     app.begin_edit();
-                                }
+                                        }
 
-                                app.last_key_press = Some(key.code);
-                            } else {
-                                match key.code {
-                                    KeyCode::Esc => {
-                                        if editing_active {
+                                        app.last_key_press = Some(key.code);
+                                    } else {
+                                        match key.code {
+                                            KeyCode::Esc => {
+                                                if editing_active {
                                             app.cancel_edit();
                                         } else {
                                             if app.list_view_state.assigned_to_me_filter_on {
