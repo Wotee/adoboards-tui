@@ -436,6 +436,7 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         );
 
     let list_area = chunks[0];
+    f.render_widget(Clear, list_area);
     f.render_stateful_widget(list, list_area, &mut app.list_view_state.list_state);
 
     draw_hover_popup(f, app, list_area);
@@ -449,6 +450,7 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
         let filter_text = Line::from(format!("/{}", app.list_view_state.filter_query));
         let filter_paragraph = Paragraph::new(filter_text).block(filter_block);
+        f.render_widget(Clear, chunks[1]);
         f.render_widget(filter_paragraph, chunks[1]);
 
         let x = chunks[1].x + 2 + app.list_view_state.filter_query.len() as u16;
@@ -458,6 +460,7 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
+    f.render_widget(Clear, area);
     let filtered_items = app.get_filtered_items();
     let selected_index = app.list_view_state.list_state.selected().unwrap_or(0);
     let item = match filtered_items.get(selected_index) {
@@ -640,7 +643,6 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
             width: chunks[1].width,
             height: 3,
         };
-        f.render_widget(Clear, status_area);
         f.render_widget(status_para, status_area);
     }
 }
@@ -678,5 +680,6 @@ pub fn draw_status_screen(f: &mut ratatui::Frame, message: &str) {
         )
         .split(area);
 
+    f.render_widget(Clear, chunks[1]);
     f.render_widget(paragraph, chunks[1]);
 }
