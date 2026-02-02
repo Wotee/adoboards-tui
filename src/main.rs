@@ -12,9 +12,14 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 mod app;
 mod cache;
 mod config;
+mod filter;
+mod input;
 mod models;
+mod picker;
 mod services;
+mod state;
 mod ui;
+mod ui_state;
 
 use crate::app::{App, LoadingState, RefreshPolicy, prefetch_layouts, run_app};
 use crate::cache::{
@@ -55,12 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Reset caches if explicitly refreshing
                     if matches!(refresh_policy, RefreshPolicy::Full) {
                         app.clear_layout_cache();
-                        app.field_meta_cache.clear();
+                        app.board_state.field_meta_cache.clear();
                     }
 
                     // 1) Work items: try cache first
                     let items_result = match source.kind {
-                        crate::app::SourceKind::Backlog => {
+                        crate::ui_state::SourceKind::Backlog => {
                             let cache_key = WorkItemsCacheKey::Backlog {
                                 organization: source.organization.clone(),
                                 project: source.project.clone(),
@@ -86,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 Ok::<_, anyhow::Error>(items)
                             }
                         }
-                        crate::app::SourceKind::Iteration(iteration) => {
+                        crate::ui_state::SourceKind::Iteration(iteration) => {
                             let cache_key = WorkItemsCacheKey::Iteration {
                                 organization: iteration.organization.clone(),
                                 project: iteration.project.clone(),
@@ -147,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             project: source.project.clone(),
                             work_item_type: display.clone(),
                         };
-                        let in_memory = app.layout_cache.get(&cache_key).is_some();
+                        let in_memory = app.board_state.layout_cache.get(&cache_key).is_some();
                         let on_disk = if matches!(refresh_policy, RefreshPolicy::Full) {
                             None
                         } else {
@@ -159,13 +164,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             missing_layout_displays.push(display.clone());
                         } else if !in_memory {
                             if let Some(disk) = on_disk {
-                                app.layout_cache.insert(cache_key, disk);
+                                app.board_state.layout_cache.insert(cache_key, disk);
                             }
                         }
                     }
 
                     // 3) Determine if we need to fetch process/work item types
-                    let mut process_id = app.process_template_type.clone();
+                    let mut process_id = app.board_state.process_template_type.clone();
                     let need_process_fetch =
                         matches!(refresh_policy, RefreshPolicy::Full)
                             || !missing_layout_displays.is_empty();
@@ -202,7 +207,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // If we already have work item types, fill layout_pairs without extra API calls
                     if layout_pairs.is_empty() && !missing_layout_displays.is_empty() {
                         for display in &missing_layout_displays {
-                            if let Some(reference) = app.work_item_types.get(display) {
+                            if let Some(reference) = app.board_state.work_item_types.get(display) {
                                 layout_pairs.push((display.clone(), reference.clone()));
                             }
                         }
@@ -274,11 +279,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     if let Ok(prefetched) = layout_handle.await {
                         if !prefetched.is_empty() {
-                            app.layout_cache.extend(prefetched);
+                            app.board_state.layout_cache.extend(prefetched);
                         }
                     }
                     if let Ok(meta) = fields_handle.await {
-                        app.field_meta_cache = meta;
+                        app.board_state.field_meta_cache = meta;
                     }
 
                     if matches!(app.refresh_policy, RefreshPolicy::Full) {

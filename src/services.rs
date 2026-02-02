@@ -292,7 +292,7 @@ pub async fn build_field_metadata_cache(
 pub async fn update_work_item_in_ado(
     board: &BoardConfig,
     item: &WorkItem,
-    state: &crate::app::DetailEditState,
+    state: &crate::ui_state::DetailEditState,
 ) -> Result<()> {
     let credential = get_credential()?;
     let wit_client = WitClientBuilder::new(credential).build();

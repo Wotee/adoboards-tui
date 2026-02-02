@@ -1,3 +1,12 @@
+//! UI module
+//!
+//! This module contains all UI-related functionality:
+//! - Rendering and drawing functions
+//! - UI state management
+//! - UI controller for state coordination
+
+pub mod controller;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -130,26 +139,6 @@ fn calculate_detail_picker_rect(
     })
 }
 
-fn draw_hover_popup(f: &mut ratatui::Frame, app: &mut App, list_area: Rect) {
-    if app.list_view_state.is_list_details_hover_visible {
-        if let Some(item) = app.get_selected_item() {
-            if let Some(popup_rect) = calculate_popup_rect(f.area(), app, list_area) {
-                f.render_widget(Clear, popup_rect);
-                let content_text = vec![
-                    Line::from(format!("Assigned To: {}", item.assigned_to)),
-                    Line::from(format!("State: {}", item.state)),
-                ];
-
-                let popup_block = Block::default()
-                    .borders(Borders::ALL)
-                    .title("Details")
-                    .border_style(Style::default().fg(Color::LightBlue));
-                f.render_widget(Paragraph::new(content_text).block(popup_block), popup_rect);
-            }
-        }
-    }
-}
-
 fn draw_picker_popup(
     f: &mut ratatui::Frame,
     picker: &crate::app::PickerState,
@@ -164,13 +153,20 @@ fn draw_picker_popup(
         for (idx, t) in picker.options.iter().enumerate() {
             let is_selected = Some(idx) == picker.selected;
             let is_active = picker.active.contains(t);
-            let indicator = if is_active { "[x]" } else { "[ ]" };
+            // Show [x] for the currently selected/highlighted item
+            let indicator = if is_selected { "[x]" } else { "[ ]" };
             let line = if is_selected {
                 Line::from(Span::styled(
                     format!("{} {}", indicator, t),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
+                ))
+            } else if is_active {
+                // For multi-select: show checked state with different styling
+                Line::from(Span::styled(
+                    format!("[x] {}", t),
+                    Style::default().fg(Color::Green),
                 ))
             } else {
                 Line::from(format!("{} {}", indicator, t))
@@ -266,11 +262,7 @@ pub fn draw_help_popup(f: &mut ratatui::Frame, app: &App) {
         key(&keys.jump_to_end),
         Span::raw(" end"),
     ]));
-    lines.push(Line::from(vec![
-        Span::raw("  Enter open item, "),
-        key(&keys.hover),
-        Span::raw(" hover"),
-    ]));
+    lines.push(Line::from(vec![Span::raw("  Enter open item")]));
     lines.push(Line::from(vec![
         Span::raw("  "),
         key(&keys.search),
@@ -439,7 +431,6 @@ pub fn draw_list_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
     f.render_widget(Clear, list_area);
     f.render_stateful_widget(list, list_area, &mut app.list_view_state.list_state);
 
-    draw_hover_popup(f, app, list_area);
     draw_type_filter_popup(f, app, list_area);
 
     if app.list_view_state.is_filtering {
@@ -484,7 +475,14 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+        .constraints(
+            [
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(0),
+            ]
+            .as_ref(),
+        )
         .split(area);
 
     let mut fields_to_render = if let Some(state) = edit_state {
@@ -497,7 +495,7 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
             item.work_item_type.clone(),
         );
 
-        app.layout_cache
+        app.layout_cache()
             .get(&cache_key)
             .map(|controls| {
                 controls
@@ -505,7 +503,7 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
                     .filter_map(|(id, label)| {
                         item.fields.get(id).map(|value| {
                             let allowed_values = app
-                                .field_meta_cache
+                                .field_meta_cache()
                                 .get(&item.work_item_type)
                                 .and_then(|fields| {
                                     fields
@@ -513,7 +511,7 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
                                         .find(|f| f.reference_name == *id)
                                         .map(|f| f.allowed_values.clone())
                                 });
-                            crate::app::VisibleField::with_value(
+                            crate::ui_state::VisibleField::with_value(
                                 label.clone(),
                                 id.clone(),
                                 value.clone(),
@@ -525,6 +523,45 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
             })
             .unwrap_or_default()
     };
+
+    // Add State and Assigned To fields at the beginning (only when not editing - they're already in edit_state when editing)
+    if !is_editing {
+        let state_allowed_values =
+            app.field_meta_cache()
+                .get(&item.work_item_type)
+                .and_then(|fields| {
+                    fields
+                        .iter()
+                        .find(|f| f.reference_name == "System.State")
+                        .map(|f| f.allowed_values.clone())
+                });
+        let assigned_to_allowed_values =
+            app.field_meta_cache()
+                .get(&item.work_item_type)
+                .and_then(|fields| {
+                    fields
+                        .iter()
+                        .find(|f| f.reference_name == "System.AssignedTo")
+                        .map(|f| f.allowed_values.clone())
+                });
+
+        let state_field = crate::ui_state::VisibleField::with_value(
+            "State".to_string(),
+            "System.State".to_string(),
+            item.state.clone(),
+            state_allowed_values,
+        );
+        let assigned_to_field = crate::ui_state::VisibleField::with_value(
+            "Assigned To".to_string(),
+            "System.AssignedTo".to_string(),
+            item.assigned_to.clone(),
+            assigned_to_allowed_values,
+        );
+
+        // Insert at the beginning of the fields list
+        fields_to_render.insert(0, assigned_to_field);
+        fields_to_render.insert(0, state_field);
+    }
 
     let (title_value, active_field) = if let Some(state) = edit_state {
         (state.title.clone(), state.active_field)
@@ -553,8 +590,69 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
         .block(title_block);
     f.render_widget(title_paragraph, chunks[0]);
 
-    if fields_to_render.is_empty() {
-        fields_to_render.push(crate::app::VisibleField::with_value(
+    // Collect picker popup render info to render after all fields
+    let mut picker_popups: Vec<(usize, Rect)> = Vec::new();
+
+    // Render State and Assigned To fields side-by-side in chunks[1]
+    if fields_to_render.len() >= 2 {
+        let status_row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .split(chunks[1]);
+
+        // Render State field (index 0)
+        let is_state_active =
+            matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == 0);
+        let state_block = Block::default()
+            .title(fields_to_render[0].label.as_str())
+            .borders(Borders::ALL)
+            .border_type(if is_editing && is_state_active {
+                ratatui::widgets::BorderType::Thick
+            } else {
+                ratatui::widgets::BorderType::Plain
+            })
+            .border_style(Style::default().fg(if is_editing && is_state_active {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            }));
+        let state_lines = vec![Line::from(Span::raw(fields_to_render[0].value.clone()))];
+        let state_paragraph = Paragraph::new(state_lines).block(state_block);
+        f.render_widget(state_paragraph, status_row[0]);
+
+        // Render Assigned To field (index 1)
+        let is_assigned_active =
+            matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == 1);
+        let assigned_block = Block::default()
+            .title(fields_to_render[1].label.as_str())
+            .borders(Borders::ALL)
+            .border_type(if is_editing && is_assigned_active {
+                ratatui::widgets::BorderType::Thick
+            } else {
+                ratatui::widgets::BorderType::Plain
+            })
+            .border_style(Style::default().fg(if is_editing && is_assigned_active {
+                Color::Cyan
+            } else {
+                Color::LightBlue
+            }));
+        let assigned_lines = vec![Line::from(Span::raw(fields_to_render[1].value.clone()))];
+        let assigned_paragraph = Paragraph::new(assigned_lines).block(assigned_block);
+        f.render_widget(assigned_paragraph, status_row[1]);
+
+        // Collect picker popup info for State and Assigned To if active
+        if is_editing && is_state_active {
+            picker_popups.push((0, status_row[0]));
+        }
+        if is_editing && is_assigned_active {
+            picker_popups.push((1, status_row[1]));
+        }
+    }
+
+    // Handle remaining fields (index 2 and beyond) in chunks[2]
+    let remaining_fields: Vec<_> = fields_to_render.iter_mut().skip(2).collect();
+    if remaining_fields.is_empty() {
+        fields_to_render.push(crate::ui_state::VisibleField::with_value(
             "No layout fields".to_string(),
             "".to_string(),
             "No fields for this layout".to_string(),
@@ -563,6 +661,7 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
     }
     let constraints: Vec<Constraint> = fields_to_render
         .iter()
+        .skip(2)
         .map(|field| {
             if field
                 .picker
@@ -578,15 +677,17 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let field_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
-        .split(chunks[1]);
+        .split(chunks[2]);
 
     for (idx, (field, area)) in fields_to_render
         .iter_mut()
+        .skip(2)
         .zip(field_chunks.iter())
         .enumerate()
     {
+        let actual_idx = idx + 2; // Account for the first two fields already rendered
         let is_active =
-            matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == idx);
+            matches!(active_field, DetailField::Dynamic(active_idx) if active_idx == actual_idx);
         let block = Block::default()
             .title(field.label.as_str())
             .borders(Borders::ALL)
@@ -616,16 +717,21 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
         f.render_widget(paragraph, *area);
 
         if is_editing && is_active {
-            if let Some(picker) = field.picker.as_ref() {
-                draw_detail_picker_popup(f, picker, *area);
-            }
+            picker_popups.push((actual_idx, *area));
+        }
+    }
+
+    // Render picker popups after all fields have been rendered
+    for (field_idx, area) in picker_popups {
+        if let Some(picker) = fields_to_render[field_idx].picker.as_ref() {
+            draw_detail_picker_popup(f, picker, area);
         }
     }
 
     let status_line = match &app.detail_view_state.save_status {
-        crate::app::SaveStatus::Idle => None,
-        crate::app::SaveStatus::Saving => Some("Saving...".to_string()),
-        crate::app::SaveStatus::Failed(msg) => Some(format!("Save failed: {}", msg)),
+        crate::ui_state::SaveStatus::Idle => None,
+        crate::ui_state::SaveStatus::Saving => Some("Saving...".to_string()),
+        crate::ui_state::SaveStatus::Failed(msg) => Some(format!("Save failed: {}", msg)),
     };
 
     if let Some(status) = status_line {
@@ -639,8 +745,8 @@ pub fn draw_detail_view(f: &mut ratatui::Frame, app: &App, area: Rect) {
             .wrap(Wrap { trim: true });
         let status_area = Rect {
             x: chunks[0].x,
-            y: chunks[1].y.saturating_sub(3).max(chunks[0].y + 3),
-            width: chunks[1].width,
+            y: chunks[2].y.saturating_sub(3).max(chunks[0].y + 6),
+            width: chunks[2].width,
             height: 3,
         };
         f.render_widget(status_para, status_area);

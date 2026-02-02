@@ -1,17 +1,17 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::KeyCode;
 use ratatui::{Terminal, widgets::ListState};
 use tokio::sync::oneshot;
 
 use crate::cache::{LayoutCacheKey, read_layout_cache, write_layout_cache};
-use crate::config::{AppConfig, BoardConfig, IterationConfig, KeysConfig};
+use crate::config::{AppConfig, BoardConfig, KeysConfig};
 use crate::models::{DetailField, WorkItem};
+pub use crate::picker::PickerState;
 use crate::services::{WorkItemFieldInfo, fetch_work_item_layout, update_work_item_in_ado};
-use crate::ui::{draw_detail_view, draw_list_view, draw_status_screen};
+use crate::state::BoardState;
 
 
 #[derive(Clone, PartialEq)]
@@ -26,286 +26,108 @@ pub enum LoadingState {
     Error(String),
 }
 
-#[derive(Clone, Default)]
-pub struct PickerState {
-    pub is_open: bool,
-    pub options: Vec<String>,
-    pub selected: Option<usize>,
-    pub active: BTreeSet<String>,
-}
-
-impl PickerState {
-    pub fn from_options(options: Vec<String>) -> Self {
-        let mut state = Self::default();
-        state.set_options(options);
-        state
-    }
-
-    pub fn set_options<I: IntoIterator<Item = String>>(&mut self, options: I) {
-        let unique: BTreeSet<String> = options.into_iter().collect();
-        self.options = unique.into_iter().collect();
-        self.clamp_selection();
-    }
-
-    pub fn toggle_open(&mut self) {
-        self.is_open = !self.is_open;
-        if self.is_open {
-            self.clamp_selection();
-        } else {
-            self.selected = None;
-        }
-    }
-
-    pub fn close(&mut self) {
-        self.is_open = false;
-        self.selected = None;
-    }
-
-    pub fn move_selection(&mut self, direction: isize) {
-        if self.options.is_empty() {
-            self.selected = None;
-            return;
-        }
-        let current = self.selected.unwrap_or(0) as isize;
-        let next = (current + direction).clamp(0, self.options.len() as isize - 1);
-        self.selected = Some(next as usize);
-    }
-
-    pub fn toggle_active(&mut self) {
-        if let Some(idx) = self.selected {
-            if let Some(value) = self.options.get(idx).cloned() {
-                if self.active.contains(&value) {
-                    self.active.remove(&value);
-                } else {
-                    self.active.insert(value);
-                }
-            }
-        }
-    }
-
-    pub fn clear_active(&mut self) {
-        self.active.clear();
-    }
-
-    pub fn set_selected_to_value(&mut self, value: &str) {
-        self.selected = self.options.iter().position(|v| v == value);
-    }
-
-    fn clamp_selection(&mut self) {
-        if self.options.is_empty() {
-            self.selected = None;
-            return;
-        }
-        let max_idx = self.options.len() - 1;
-        let selection = self.selected.unwrap_or(0).min(max_idx);
-        self.selected = Some(selection);
-    }
-}
-
-pub struct ListViewState {
-    pub list_state: ListState,
-    pub filter_query: String,
-    pub is_filtering: bool,
-    pub is_list_details_hover_visible: bool,
-    pub assigned_to_me_filter_on: bool,
-    pub type_picker: PickerState,
-}
-
-impl ListViewState {
-    pub fn new(list_state: ListState) -> Self {
-        Self {
-            list_state,
-            filter_query: String::new(),
-            is_filtering: false,
-            is_list_details_hover_visible: false,
-            assigned_to_me_filter_on: false,
-            type_picker: PickerState::default(),
-        }
-    }
-}
-
-impl Default for ListViewState {
-    fn default() -> Self {
-        Self::new(ListState::default())
-    }
-}
-
-#[derive(Clone)]
-pub struct VisibleField {
-    pub label: String,
-    pub reference: String,
-    pub value: String,
-    pub picker: Option<PickerState>,
-}
-
-impl VisibleField {
-    pub fn with_value(
-        label: String,
-        reference: String,
-        value: String,
-        allowed_values: Option<Vec<String>>,
-    ) -> Self {
-        let mut picker = allowed_values.and_then(|values| {
-            if values.is_empty() {
-                None
-            } else {
-                Some(PickerState::from_options(values))
-            }
-        });
-        if let Some(ref mut p) = picker {
-            p.set_selected_to_value(&value);
-        }
-        Self {
-            label,
-            reference,
-            value,
-            picker,
-        }
-    }
-
-    fn select_value(&mut self, idx: usize) {
-        if let Some(picker) = self.picker.as_mut() {
-            if let Some(choice) = picker.options.get(idx).cloned() {
-                self.value = choice;
-                picker.selected = Some(idx);
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct DetailEditState {
-    pub is_editing: bool,
-    pub active_field: DetailField,
-    pub title: String,
-    pub visible_fields: Vec<VisibleField>,
-}
-
-impl DetailEditState {
-    pub fn new_from_item(item: &WorkItem) -> Self {
-        Self {
-            is_editing: false,
-            active_field: DetailField::Title,
-            title: item.title.clone(),
-            visible_fields: Vec::new(),
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct DetailViewState {
-    pub edit_state: Option<DetailEditState>,
-    pub save_status: SaveStatus,
-    pub save_receiver: Option<oneshot::Receiver<Result<(WorkItem, DetailEditState)>>>,
-}
-
-#[derive(Clone)]
-pub enum SourceKind {
-    Backlog,
-    Iteration(IterationConfig),
-}
-
-#[derive(Default, Clone)]
-pub enum SaveStatus {
-    #[default]
-    Idle,
-    Saving,
-    Failed(String),
-}
-
-#[derive(Clone)]
-pub struct SourceEntry {
-    pub title: String,
-    pub team: String,
-    pub organization: String,
-    pub project: String,
-    pub kind: SourceKind,
-}
+// UI State types re-exported from ui_state module
+pub use crate::ui_state::{DetailEditState, DetailViewState, ListViewState, SaveStatus, SourceEntry, VisibleField};
 
 pub struct App {
-    pub items: Vec<WorkItem>,
+    /// Business logic state (work items, sources, caches)
+    pub board_state: BoardState,
+    /// UI state for list view
     pub list_view_state: ListViewState,
+    /// UI state for detail view
     pub detail_view_state: DetailViewState,
+    /// Loading status
     pub loading_state: LoadingState,
-    pub sources: Vec<SourceEntry>,
-    pub current_source_index: usize,
+    /// Current user name
     pub me: String,
+    /// Key bindings configuration
     pub keys: KeysConfig,
+    /// Last key pressed (for multi-key sequences)
     pub last_key_press: Option<KeyCode>,
-    pub work_item_types: BTreeMap<String, String>,
-    pub process_template_type: Option<String>,
-    pub layout_cache: HashMap<(String, String, String), Vec<(String, String)>>,
-    pub field_meta_cache: HashMap<String, Vec<WorkItemFieldInfo>>,
+    /// Refresh policy for data loading
     pub refresh_policy: RefreshPolicy,
+    /// Whether help popup is showing
     pub showing_help: bool,
+}
+
+// Backward-compatible accessors for fields moved to board_state
+impl App {
+    /// Access work items
+    pub fn items(&self) -> &Vec<WorkItem> {
+        &self.board_state.items
+    }
+
+    /// Access sources
+    pub fn sources(&self) -> &Vec<SourceEntry> {
+        &self.board_state.sources
+    }
+
+    /// Access current source index
+    pub fn current_source_index(&self) -> usize {
+        self.board_state.current_source_index
+    }
+
+    /// Access work item types
+    pub fn work_item_types(&self) -> &BTreeMap<String, String> {
+        &self.board_state.work_item_types
+    }
+
+    /// Access process template type
+    pub fn process_template_type(&self) -> Option<&String> {
+        self.board_state.process_template_type.as_ref()
+    }
+
+    /// Access layout cache
+    pub fn layout_cache(&self) -> &HashMap<(String, String, String), Vec<(String, String)>> {
+        &self.board_state.layout_cache
+    }
+
+    /// Access field metadata cache
+    pub fn field_meta_cache(&self) -> &HashMap<String, Vec<WorkItemFieldInfo>> {
+        &self.board_state.field_meta_cache
+    }
 }
 
 impl App {
     pub fn new(config: AppConfig) -> App {
         let mut list_state = ListState::default();
-        let mut sources: Vec<SourceEntry> = Vec::new();
+        let board_state = BoardState::new(&config.common.me, &config.boards, &config.iterations);
 
-        for board in &config.boards {
-            sources.push(SourceEntry {
-                title: format!("{} Backlog", board.team),
-                team: board.team.clone(),
-                organization: board.organization.clone(),
-                project: board.project.clone(),
-                kind: SourceKind::Backlog,
-            });
-        }
-
-        for iteration in &config.iterations {
-            sources.push(SourceEntry {
-                title: format!("{} Iteration: {}", iteration.team, iteration.iteration),
-                team: iteration.team.clone(),
-                organization: iteration.organization.clone(),
-                project: iteration.project.clone(),
-                kind: SourceKind::Iteration(iteration.clone()),
-            });
-        }
-
-        if !sources.is_empty() {
+        if !board_state.sources.is_empty() {
             list_state.select(Some(0));
         }
 
         App {
-            items: Vec::new(),
+            board_state,
             list_view_state: ListViewState::new(list_state),
             detail_view_state: DetailViewState::default(),
             loading_state: LoadingState::Loading,
-            sources,
-            current_source_index: 0,
             me: config.common.me,
             keys: config.keys,
             last_key_press: None,
-            work_item_types: BTreeMap::new(),
-            process_template_type: None,
-            layout_cache: HashMap::new(),
-            field_meta_cache: HashMap::new(),
             refresh_policy: RefreshPolicy::Normal,
             showing_help: false,
         }
     }
 
     pub fn set_work_item_types(&mut self, types: BTreeMap<String, String>) {
-        self.work_item_types = types;
+        self.board_state.work_item_types = types;
         self.clear_layout_cache();
-        self.field_meta_cache.clear();
+        self.board_state.field_meta_cache.clear();
     }
 
     pub fn clear_layout_cache(&mut self) {
-        self.layout_cache.clear();
+        self.board_state.layout_cache.clear();
     }
 
     pub fn set_process_template_type(&mut self, process_template_type: String) {
-        self.process_template_type = Some(process_template_type);
+        self.board_state.process_template_type = Some(process_template_type);
         self.clear_layout_cache();
-        self.field_meta_cache.clear();
+        self.board_state.field_meta_cache.clear();
     }
 
     pub fn current_source(&self) -> &SourceEntry {
-        &self.sources[self.current_source_index]
+        &self.board_state.sources[self.board_state.current_source_index]
     }
 
     pub fn load_data(&mut self, items: Vec<WorkItem>) {
@@ -316,7 +138,7 @@ impl App {
         self.list_view_state
             .type_picker
             .set_options(items.iter().map(|i| i.work_item_type.clone()));
-        self.items = items;
+        self.board_state.items = items;
         self.list_view_state.list_state = list_state;
         self.list_view_state.type_picker.selected = None;
         self.detail_view_state.edit_state = None;
@@ -350,14 +172,14 @@ impl App {
         }
     }
 
-    async fn ensure_detail_state_for_selected_item(&mut self) {
+    pub(crate) async fn ensure_detail_state_for_selected_item(&mut self) {
         if self.detail_view_state.edit_state.is_some() {
             return;
         }
         self.detail_view_state.save_status = SaveStatus::Idle;
         self.detail_view_state.save_receiver = None;
         if let Some(item) = self.get_selected_item().cloned() {
-            let reference_name = self.work_item_types.get(&item.work_item_type).cloned();
+            let reference_name = self.board_state.work_item_types.get(&item.work_item_type).cloned();
             let mut edit_state = DetailEditState::new_from_item(&item);
 
             let organization = self.current_source().organization.clone();
@@ -380,14 +202,14 @@ impl App {
 
             let cached_controls = if self.refresh_policy == RefreshPolicy::Full {
                 None
-            } else if let Some(cached) = self.layout_cache.get(&cache_key) {
+            } else if let Some(cached) = self.board_state.layout_cache.get(&cache_key) {
                 Some(cached.clone())
             } else if let Some(disk) = read_layout_cache(&layout_key_display).or_else(|| {
                 layout_key_ref
                     .as_ref()
                     .and_then(|ref_key| read_layout_cache(ref_key))
             }) {
-                self.layout_cache.insert(cache_key.clone(), disk.clone());
+                self.board_state.layout_cache.insert(cache_key.clone(), disk.clone());
                 Some(disk)
             } else {
                 None
@@ -396,7 +218,7 @@ impl App {
             let controls = if let Some(cached) = cached_controls {
                 cached
             } else if let (Some(process_id), Some(reference)) =
-                (self.process_template_type.clone(), reference_name.clone())
+                (self.board_state.process_template_type.clone(), reference_name.clone())
             {
                 match fetch_visible_controls(&organization, &process_id, &reference).await {
                     Ok(controls) => {
@@ -404,7 +226,7 @@ impl App {
                             let _ = write_layout_cache(ref_key, &controls);
                         }
                         let _ = write_layout_cache(&layout_key_display, &controls);
-                        self.layout_cache.insert(cache_key.clone(), controls.clone());
+                        self.board_state.layout_cache.insert(cache_key.clone(), controls.clone());
                         controls
                     }
                     Err(err) => {
@@ -420,7 +242,7 @@ impl App {
                 .into_iter()
                 .filter_map(|(id, label)| {
                     item.fields.get(&id).cloned().map(|value| {
-                        let allowed_values = self.field_meta_cache.get(&item.work_item_type).and_then(
+                        let allowed_values = self.board_state.field_meta_cache.get(&item.work_item_type).and_then(
                             |fields| {
                                 fields
                                     .iter()
@@ -443,7 +265,6 @@ impl App {
     pub fn toggle_type_filter_menu(&mut self) {
         self.list_view_state.type_picker.toggle_open();
         if self.list_view_state.type_picker.is_open {
-            self.list_view_state.is_list_details_hover_visible = false;
         }
     }
 
@@ -483,18 +304,18 @@ impl App {
     }
 
     pub fn next_source(&mut self) {
-        if self.sources.len() > 1 {
-            self.current_source_index = (self.current_source_index + 1) % self.sources.len();
+        if self.board_state.sources.len() > 1 {
+            self.board_state.current_source_index = (self.board_state.current_source_index + 1) % self.board_state.sources.len();
             self.loading_state = LoadingState::Loading;
         }
     }
 
     pub fn previous_source(&mut self) {
-        if self.sources.len() > 1 {
-            if self.current_source_index == 0 {
-                self.current_source_index = self.sources.len() - 1;
+        if self.board_state.sources.len() > 1 {
+            if self.board_state.current_source_index == 0 {
+                self.board_state.current_source_index = self.board_state.sources.len() - 1;
             } else {
-                self.current_source_index -= 1;
+                self.board_state.current_source_index -= 1;
             }
             self.loading_state = LoadingState::Loading;
         }
@@ -527,7 +348,7 @@ impl App {
     }
 
     pub fn get_filtered_items(&self) -> Vec<&WorkItem> {
-        self.items
+        self.board_state.items
             .iter()
             .filter(|item| {
                 if self.list_view_state.assigned_to_me_filter_on {
@@ -560,7 +381,6 @@ impl App {
     pub fn toggle_assigned_to_me_filter(&mut self) {
         self.list_view_state.assigned_to_me_filter_on =
             !self.list_view_state.assigned_to_me_filter_on;
-        self.list_view_state.is_list_details_hover_visible = false;
         self.list_view_state
             .list_state
             .select(self.get_filtered_items().first().map(|_| 0));
@@ -650,7 +470,7 @@ impl App {
         new_state
     }
 
-    fn cancel_edit(&mut self) {
+    pub(crate) fn cancel_edit(&mut self) {
         self.detail_view_state.save_receiver = None;
         if let Some(state) = self.detail_view_state.edit_state.as_ref() {
             if state.is_editing {
@@ -660,21 +480,151 @@ impl App {
         }
     }
 
-    fn begin_edit(&mut self) {
+    pub(crate) fn begin_edit(&mut self) {
         self.detail_view_state.save_receiver = None;
         self.detail_view_state.save_status = SaveStatus::Idle;
-        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
-            state.is_editing = true;
-            state.active_field = DetailField::Title;
-            App::clamp_active_field(state);
-        } else if let Some(item) = self.get_selected_item() {
-            let mut state = DetailEditState::new_from_item(item);
-            state.is_editing = true;
-            self.detail_view_state.edit_state = Some(state);
+        
+        if let Some(item) = self.get_selected_item() {
+            let edit_state_exists = self.detail_view_state.edit_state.is_some();
+            
+            if edit_state_exists {
+                // Update existing edit state
+                let source = self.current_source();
+                let cache_key = (
+                    source.organization.clone(),
+                    source.project.clone(),
+                    item.work_item_type.clone(),
+                );
+                
+                // Populate visible_fields with State, Assigned To, and layout fields
+                let mut visible_fields = Vec::new();
+                
+                // Add State field with picker
+                let state_allowed_values = self
+                    .field_meta_cache()
+                    .get(&item.work_item_type)
+                    .and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|f| f.reference_name == "System.State")
+                            .map(|f| f.allowed_values.clone())
+                    });
+                let state_field = crate::ui_state::VisibleField::with_value(
+                    "State".to_string(),
+                    "System.State".to_string(),
+                    item.state.clone(),
+                    state_allowed_values,
+                );
+                visible_fields.push(state_field);
+                
+                // Add Assigned To field (no picker for now)
+                let assigned_to_field = crate::ui_state::VisibleField::with_value(
+                    "Assigned To".to_string(),
+                    "System.AssignedTo".to_string(),
+                    item.assigned_to.clone(),
+                    None,
+                );
+                visible_fields.push(assigned_to_field);
+                
+                // Add other dynamic fields from layout
+                if let Some(controls) = self.layout_cache().get(&cache_key) {
+                    for (id, label) in controls {
+                        if let Some(value) = item.fields.get(id) {
+                            let allowed_values = self
+                                .field_meta_cache()
+                                .get(&item.work_item_type)
+                                .and_then(|fields| {
+                                    fields
+                                        .iter()
+                                        .find(|f| f.reference_name == *id)
+                                        .map(|f| f.allowed_values.clone())
+                                });
+                            let field = crate::ui_state::VisibleField::with_value(
+                                label.clone(),
+                                id.clone(),
+                                value.clone(),
+                                allowed_values,
+                            );
+                            visible_fields.push(field);
+                        }
+                    }
+                }
+                
+                if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+                    state.is_editing = true;
+                    state.active_field = DetailField::Title;
+                    state.visible_fields = visible_fields;
+                    App::clamp_active_field(state);
+                }
+            } else {
+                // Create new edit state
+                let source = self.current_source();
+                let cache_key = (
+                    source.organization.clone(),
+                    source.project.clone(),
+                    item.work_item_type.clone(),
+                );
+                
+                let mut state = DetailEditState::new_from_item(item);
+                state.is_editing = true;
+                
+                // Add State field with picker
+                let state_allowed_values = self
+                    .field_meta_cache()
+                    .get(&item.work_item_type)
+                    .and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|f| f.reference_name == "System.State")
+                            .map(|f| f.allowed_values.clone())
+                    });
+                let state_field = crate::ui_state::VisibleField::with_value(
+                    "State".to_string(),
+                    "System.State".to_string(),
+                    item.state.clone(),
+                    state_allowed_values,
+                );
+                state.visible_fields.push(state_field);
+                
+                // Add Assigned To field (no picker for now)
+                let assigned_to_field = crate::ui_state::VisibleField::with_value(
+                    "Assigned To".to_string(),
+                    "System.AssignedTo".to_string(),
+                    item.assigned_to.clone(),
+                    None,
+                );
+                state.visible_fields.push(assigned_to_field);
+                
+                // Add other dynamic fields from layout
+                if let Some(controls) = self.layout_cache().get(&cache_key) {
+                    for (id, label) in controls {
+                        if let Some(value) = item.fields.get(id) {
+                            let allowed_values = self
+                                .field_meta_cache()
+                                .get(&item.work_item_type)
+                                .and_then(|fields| {
+                                    fields
+                                        .iter()
+                                        .find(|f| f.reference_name == *id)
+                                        .map(|f| f.allowed_values.clone())
+                                });
+                            let field = crate::ui_state::VisibleField::with_value(
+                                label.clone(),
+                                id.clone(),
+                                value.clone(),
+                                allowed_values,
+                            );
+                            state.visible_fields.push(field);
+                        }
+                    }
+                }
+                
+                self.detail_view_state.edit_state = Some(state);
+            }
         }
     }
 
-    fn apply_typing(&mut self, c: char) {
+    pub(crate) fn apply_typing(&mut self, c: char) {
         if let Some(state) = self.detail_view_state.edit_state.as_mut() {
             if !state.is_editing {
                 return;
@@ -698,7 +648,33 @@ impl App {
         }
     }
 
-    fn move_active_picker(&mut self, direction: isize) {
+    pub(crate) fn apply_backspace(&mut self) {
+        if let Some(state) = self.detail_view_state.edit_state.as_mut() {
+            if !state.is_editing {
+                return;
+            }
+            Self::clamp_active_field(state);
+            match state.active_field {
+                DetailField::Title => {
+                    state.title.pop();
+                }
+                DetailField::Dynamic(idx) => {
+                    if let Some(field) = state.visible_fields.get_mut(idx) {
+                        let picker_has_options = field
+                            .picker
+                            .as_ref()
+                            .map(|p| !p.options.is_empty())
+                            .unwrap_or(false);
+                        if !picker_has_options {
+                            field.value.pop();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn move_active_picker(&mut self, direction: isize) {
         if let Some(state) = self.detail_view_state.edit_state.as_mut() {
             if !state.is_editing {
                 return;
@@ -720,7 +696,7 @@ impl App {
         }
     }
 
-    fn start_save(&mut self) {
+    pub(crate) fn start_save(&mut self) {
         let selected_item = self.get_selected_item().cloned();
         let source = self.current_source().clone();
         let state_for_save = self.detail_view_state.edit_state.clone();
@@ -751,14 +727,14 @@ impl App {
         }
     }
 
-    fn poll_save_completion(&mut self) {
+    pub(crate) fn poll_save_completion(&mut self) {
         if let Some(receiver) = self.detail_view_state.save_receiver.as_mut() {
             use tokio::sync::oneshot::error::TryRecvError;
 
             match receiver.try_recv() {
                 Ok(Ok((updated_item, mut updated_state))) => {
                     if let Some(current_item) =
-                        self.items.iter_mut().find(|i| i.id == updated_item.id)
+                        self.board_state.items.iter_mut().find(|i| i.id == updated_item.id)
                     {
                         current_item.title = updated_state.title.clone();
                         for field in &updated_state.visible_fields {
@@ -905,390 +881,6 @@ pub async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> io::Result<()> {
-    if matches!(app.loading_state, LoadingState::Loading) {
-        return Ok(());
-    }
-    loop {
-        terminal.draw(|f| match app.loading_state {
-            LoadingState::Loaded => {
-                let main_chunks = ratatui::layout::Layout::default()
-                    .direction(ratatui::layout::Direction::Horizontal)
-                    .constraints([
-                        ratatui::layout::Constraint::Percentage(38),
-                        ratatui::layout::Constraint::Percentage(62),
-                    ])
-                    .split(f.area());
-
-                draw_list_view(f, app, main_chunks[0]);
-                draw_detail_view(f, app, main_chunks[1]);
-                crate::ui::draw_help_popup(f, app);
-            }
-            LoadingState::Loading => {}
-            LoadingState::Error(ref msg) => {
-                draw_status_screen(f, &format!("Failed to load data. {}", msg))
-            }
-        })?;
-
-        if event::poll(Duration::from_millis(100))? {
-                    if let Event::Key(key) = event::read()? {
-                        match app.loading_state {
-                            LoadingState::Loading | LoadingState::Error(_) => match key.code {
-                                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                                _ => {}
-                            },
-                            _ => {
-                                if app.showing_help {
-                                    match key.code {
-                                        KeyCode::Esc => {
-                                            app.showing_help = false;
-                                            app.last_key_press = None;
-                                        }
-                                        KeyCode::Char(c) => {
-                                            let last_key = app.last_key_press;
-                                            if key_matches_sequence(c, last_key, &app.keys.help)
-                                                || key_matches_sequence(c, last_key, &app.keys.quit)
-                                            {
-                                                app.showing_help = false;
-                                                app.last_key_press = None;
-                                            } else {
-                                                app.last_key_press = Some(key.code);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    continue;
-                                }
-
-                                if app.list_view_state.is_filtering {
-                                    match key.code {
-                                        KeyCode::Enter | KeyCode::Esc => {
-                                            app.list_view_state.is_filtering = false;
-                                            if key.code == KeyCode::Esc {
-                                        app.list_view_state.filter_query.clear();
-                                        app.clamp_selection();
-                                    }
-                                }
-                                KeyCode::Backspace => {
-                                    app.list_view_state.filter_query.pop();
-                                    app.clamp_selection();
-                                }
-                                KeyCode::Char(c) => {
-                                    if c != '/' {
-                                        app.list_view_state.filter_query.push(c);
-                                        app.clamp_selection();
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else if app.list_view_state.type_picker.is_open {
-                            match key.code {
-                                KeyCode::Esc => {
-                                    app.list_view_state.type_picker.close();
-                                }
-                                KeyCode::Char('c') => {
-                                    app.clear_type_filters();
-                                    app.list_view_state.type_picker.close();
-                                }
-                                KeyCode::Enter | KeyCode::Char(' ') => {
-                                    app.toggle_type_selection();
-                                }
-                                KeyCode::Up => {
-                                    app.move_type_selection(-1);
-                                }
-                                KeyCode::Down => {
-                                    app.move_type_selection(1);
-                                }
-                                KeyCode::Char(c) => {
-                                    let last_key = app.last_key_press;
-                                    if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                        app.list_view_state.type_picker.close();
-                                        app.last_key_press = None;
-                                    } else if key_matches_sequence(c, last_key, &app.keys.next) {
-                                        app.move_type_selection(1);
-                                        app.last_key_press = Some(key.code);
-                                    } else if key_matches_sequence(c, last_key, &app.keys.previous)
-                                    {
-                                        app.move_type_selection(-1);
-                                        app.last_key_press = Some(key.code);
-                                    } else {
-                                        app.last_key_press = None;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else {
-                            app.poll_save_completion();
-
-                            if matches!(app.detail_view_state.save_status, SaveStatus::Saving) {
-                                app.last_key_press = None;
-                                continue;
-                            }
-
-                            let editing_active = app
-                                .detail_view_state
-                                .edit_state
-                                .as_ref()
-                                .is_some_and(|s| s.is_editing);
-
-                                    let current_char = match key.code {
-                                        KeyCode::Char(c) => Some(c),
-                                        _ => None,
-                                    };
-
-                                    if let Some(c) = current_char {
-                                        let last_key = app.last_key_press;
-
-                                        if key_matches_sequence(c, last_key, &app.keys.quit) {
-                                            return Ok(());
-                                        }
-
-                                        if key_matches_sequence(c, last_key, &app.keys.help) {
-                                            app.showing_help = !app.showing_help;
-                                            app.last_key_press = None;
-                                            continue;
-                                        }
-
-                                        if editing_active {
-                                            if let Some(state) = app.detail_view_state.edit_state.as_mut() {
-                                                App::clamp_active_field(state);
-                                                if App::active_picker(state).is_some() {
-                                            if key_matches_sequence(c, last_key, &app.keys.next) {
-                                                app.move_active_picker(1);
-                                                app.last_key_press = Some(key.code);
-                                                continue;
-                                            } else if key_matches_sequence(
-                                                c,
-                                                last_key,
-                                                &app.keys.previous,
-                                            ) {
-                                                app.move_active_picker(-1);
-                                                app.last_key_press = Some(key.code);
-                                                continue;
-                                            }
-                                        }
-                                    }
-
-                                    app.apply_typing(c);
-                                    app.last_key_press = None;
-                                    continue;
-                                }
-
-                                if key_matches_sequence(c, last_key, &app.keys.jump_to_top) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.jump_to_start();
-                                } else if key_matches_sequence(c, last_key, &app.keys.jump_to_end) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.jump_to_end();
-                                } else if key_matches_sequence(c, last_key, &app.keys.search) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.list_view_state.is_filtering = true;
-                                    app.list_view_state.filter_query.clear();
-                                    app.clamp_selection();
-                                } else if key_matches_sequence(c, last_key, &app.keys.next) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.navigate_list(1);
-                                } else if key_matches_sequence(c, last_key, &app.keys.previous) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.navigate_list(-1);
-                                } else if key_matches_sequence(c, last_key, &app.keys.next_board) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.next_source();
-                                    return Ok(());
-                                } else if key_matches_sequence(c, last_key, &app.keys.previous_board) {
-                                    app.list_view_state.is_list_details_hover_visible = false;
-                                    app.previous_source();
-                                    return Ok(());
-                                } else if key_matches_sequence(c, last_key, &app.keys.hover) {
-                                    app.list_view_state.is_list_details_hover_visible = true;
-                                } else if key_matches_sequence(c, last_key, &app.keys.open) {
-                                    app.open_item();
-                                } else if key_matches_sequence(
-                                    c,
-                                    last_key,
-                                    &app.keys.assigned_to_me_filter,
-                                ) {
-                                    app.toggle_assigned_to_me_filter()
-                                } else if key_matches_sequence(
-                                    c,
-                                    last_key,
-                                    &app.keys.work_item_type_filter,
-                                ) {
-                                    app.toggle_type_filter_menu();
-                                } else if key_matches_sequence(c, last_key, &app.keys.refresh) {
-                                    app.refresh_policy = RefreshPolicy::Normal;
-                                    app.loading_state = LoadingState::Loading;
-                                    return Ok(());
-                                } else if key_matches_sequence(c, last_key, &app.keys.full_refresh) {
-                                    app.refresh_policy = RefreshPolicy::Full;
-                                    app.loading_state = LoadingState::Loading;
-                                    return Ok(());
-                                } else if key_matches_sequence(c, last_key, &app.keys.edit_config) {
-                                    let _ = crate::config::open_config();
-                                    eprintln!("Reopen adoboards for changes to take effect");
-                                    return Ok(());
-                                } else if key_matches_sequence(c, last_key, &app.keys.edit_item) {
-                                    app.ensure_detail_state_for_selected_item().await;
-                                    app.begin_edit();
-                                        }
-
-                                        app.last_key_press = Some(key.code);
-                                    } else {
-                                        match key.code {
-                                            KeyCode::Esc => {
-                                                if editing_active {
-                                            app.cancel_edit();
-                                        } else {
-                                            if app.list_view_state.assigned_to_me_filter_on {
-                                                app.toggle_assigned_to_me_filter()
-                                            }
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            if !app.list_view_state.filter_query.is_empty() {
-                                                app.list_view_state.filter_query.clear();
-                                                app.clamp_selection();
-                                            }
-                                            if app.list_view_state.type_picker.is_open {
-                                                app.toggle_type_filter_menu();
-                                            }
-                                            app.detail_view_state.edit_state = None;
-                                        }
-                                    }
-                                    KeyCode::Up => {
-                                        if editing_active {
-                                            app.move_active_picker(-1);
-                                        } else {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.navigate_list(-1);
-                                        }
-                                    }
-                                    KeyCode::Down => {
-                                        if editing_active {
-                                            app.move_active_picker(1);
-                                        } else {
-                                            app.list_view_state.is_list_details_hover_visible =
-                                                false;
-                                            app.navigate_list(1);
-                                        }
-                                    }
-                                    KeyCode::Enter => {
-                                        if editing_active {
-                                            app.select_active_picker_value();
-                                            app.start_save();
-                                        }
-                                    }
-                                    KeyCode::Tab => {
-                                        if let Some(state) =
-                                            app.detail_view_state.edit_state.as_mut()
-                                        {
-                                            if state.is_editing {
-                                                let total_fields = state.visible_fields.len();
-                                                let next = match state.active_field {
-                                                    DetailField::Title => {
-                                                        if total_fields == 0 {
-                                                            DetailField::Title
-                                                        } else {
-                                                            DetailField::Dynamic(0)
-                                                        }
-                                                    }
-                                                    DetailField::Dynamic(idx) => {
-                                                        if idx + 1 < total_fields {
-                                                            DetailField::Dynamic(idx + 1)
-                                                        } else {
-                                                            DetailField::Title
-                                                        }
-                                                    }
-                                                };
-                                                state.active_field = next;
-                                                App::clamp_active_field(state);
-                                            }
-                                        }
-                                    }
-                                    KeyCode::BackTab => {
-                                        if let Some(state) =
-                                            app.detail_view_state.edit_state.as_mut()
-                                        {
-                                            if state.is_editing {
-                                                let total_fields = state.visible_fields.len();
-                                                let prev = match state.active_field {
-                                                    DetailField::Title => {
-                                                        if total_fields == 0 {
-                                                            DetailField::Title
-                                                        } else {
-                                                            DetailField::Dynamic(total_fields - 1)
-                                                        }
-                                                    }
-                                                    DetailField::Dynamic(idx) => {
-                                                        if idx == 0 {
-                                                            DetailField::Title
-                                                        } else {
-                                                            DetailField::Dynamic(idx - 1)
-                                                        }
-                                                    }
-                                                };
-                                                state.active_field = prev;
-                                                App::clamp_active_field(state);
-                                            }
-                                        }
-                                    }
-                                    KeyCode::Delete => {
-                                        if let Some(state) =
-                                            app.detail_view_state.edit_state.as_mut()
-                                        {
-                                            if state.is_editing {
-                                                App::clamp_active_field(state);
-                                                match state.active_field {
-                                                    DetailField::Title => state.title.clear(),
-                                                    DetailField::Dynamic(idx) => {
-                                                        if let Some(field) = state.visible_fields.get_mut(idx) {
-                                                            let picker_has_options = field
-                                                                .picker
-                                                                .as_ref()
-                                                                .map(|p| !p.options.is_empty())
-                                                                .unwrap_or(false);
-                                                            if !picker_has_options {
-                                                                field.value.clear();
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    KeyCode::Backspace => {
-                                        if let Some(state) =
-                                            app.detail_view_state.edit_state.as_mut()
-                                        {
-                                            if state.is_editing {
-                                                App::clamp_active_field(state);
-                                                match state.active_field {
-                                                    DetailField::Title => {
-                                                        state.title.pop();
-                                                    }
-                                                    DetailField::Dynamic(idx) => {
-                                                        if let Some(field) = state.visible_fields.get_mut(idx) {
-                                                            let picker_has_options = field
-                                                                .picker
-                                                                .as_ref()
-                                                                .map(|p| !p.options.is_empty())
-                                                                .unwrap_or(false);
-                                                            if !picker_has_options {
-                                                                field.value.pop();
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                app.last_key_press = None;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    use crate::input::EventLoop;
+    EventLoop::new(terminal, app).run().await
 }
