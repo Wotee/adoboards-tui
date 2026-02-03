@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::env;
 use std::io;
 use std::time::Duration;
 
@@ -33,6 +34,28 @@ use crate::services::{
 };
 use crate::ui::draw_status_screen;
 
+/// Parse command line arguments for --filter option
+fn parse_filter_arg() -> Option<String> {
+    let args: Vec<String> = env::args().collect();
+    
+    for i in 0..args.len() {
+        if args[i] == "--filter" || args[i] == "-f" {
+            // Check if there's a value after the flag
+            if i + 1 < args.len() {
+                return Some(args[i + 1].clone());
+            }
+        } else if args[i].starts_with("--filter=") {
+            // Handle --filter=value format
+            let value = &args[i]["--filter=".len()..];
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    
+    None
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
@@ -43,6 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (cfg, config_ok) = load_config_or_prompt();
     let mut app = App::new(cfg);
+    let initial_filter = parse_filter_arg();
     let mut res = Ok(());
 
     if config_ok {
@@ -296,7 +320,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await;
 
                 match fetch_result {
-                    Ok(items) => app.load_data(items),
+                    Ok(items) => {
+                        app.load_data(items);
+                        // Apply initial filter if provided via CLI
+                        if let Some(ref filter) = initial_filter {
+                            app.set_initial_filter(filter);
+                        }
+                    }
                     Err(e) => {
                         let error_msg = format!("Failed to fetch data: {e:?}");
                         eprintln!("\n--- FATAL FETCH ERROR ---\n{}", error_msg);

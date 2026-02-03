@@ -120,6 +120,11 @@ impl App {
         self.board_state.layout_cache.clear();
     }
 
+    pub fn set_initial_filter(&mut self, query: &str) {
+        self.list_view_state.filter_query = query.to_string();
+        self.clamp_selection();
+    }
+
     pub fn set_process_template_type(&mut self, process_template_type: String) {
         self.board_state.process_template_type = Some(process_template_type);
         self.clear_layout_cache();
